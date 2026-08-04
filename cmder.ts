@@ -364,7 +364,8 @@ const atomicWrite = (content: string) => {
 // -------------------------------------------------------------- reconcile tick
 
 // Bottom-most pending item runs first (queue drains bottom-to-top). Prompts and
-// commands are independent queues, selected by the `cmd` flag.
+// commands are separate queues (selected by the `cmd` flag), but a command only
+// fires once no prompt is active — see the command block in tick().
 const pickPending = (s: Session, cmd = false): Prompt | null => {
 	const pending = s.prompts.filter((p) => p.isCmd === cmd && p.desiredKind === null)
 	return pending.length ? pending.reduce((a, b) => (b.lineIdx > a.lineIdx ? b : a)) : null
@@ -411,29 +412,6 @@ async function tick(rt: Rt) {
 		const promptCount = s.prompts.filter((p) => !p.isCmd).length
 		rt[label] ??= { starting: false, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: promptCount }
 
-		// Shell commands run one at a time in the shell window (2nd window). A
-		// command stays [EXECUTING] until its done-file (written when it exits) is
-		// newer than its dispatch; only then does it become [DONE] and the next
-		// pending command fire. This gates on real completion, not just dispatch.
-		const dispatchCmd = (c: Prompt) => {
-			c.desiredKind = 'EXECUTING'
-			rt[label].cmdSentAt = Date.now()
-			actions.push(() => sendCmd(label, c.text))
-		}
-		const execCmd = s.prompts.find((p) => p.isCmd && p.desiredKind === 'EXECUTING')
-		if (execCmd) {
-			const done = readCmdDone(label)
-			if (done !== null && done > (rt[label].cmdSentAt ?? 0)) {
-				execCmd.desiredKind = 'DONE'
-				rmCmdDone(label)
-				const nextCmd = pickPending(s, true)
-				if (nextCmd) dispatchCmd(nextCmd)
-			}
-		} else {
-			const nextCmd = pickPending(s, true)
-			if (nextCmd) dispatchCmd(nextCmd)
-		}
-
 		const st = readState(label)
 		const prev = rt[label].prevPromptCount
 		// EXECUTING and ATTENTION are both "the currently active prompt".
@@ -467,6 +445,33 @@ async function tick(rt: Rt) {
 			}
 		}
 		rt[label].prevPromptCount = promptCount
+
+		// Shell commands run in the shell window (2nd window), one at a time and
+		// only once the previous item — prompt or command — has finished. A command
+		// stays [EXECUTING] until its done-file (written when it exits) is newer than
+		// its dispatch; only then does it become [DONE]. We dispatch the next pending
+		// command only when nothing else in this session is running: no command is
+		// [EXECUTING] and no prompt is active (this tick's prompt dispatch is already
+		// reflected above), so a `!command` never races an in-flight prompt/command.
+		const dispatchCmd = (c: Prompt) => {
+			c.desiredKind = 'EXECUTING'
+			rt[label].cmdSentAt = Date.now()
+			actions.push(() => sendCmd(label, c.text))
+		}
+		const execCmd = s.prompts.find((p) => p.isCmd && p.desiredKind === 'EXECUTING')
+		if (execCmd) {
+			const done = readCmdDone(label)
+			if (done !== null && done > (rt[label].cmdSentAt ?? 0)) {
+				execCmd.desiredKind = 'DONE'
+				rmCmdDone(label)
+			}
+		}
+		const promptActive = s.prompts.some((p) => !p.isCmd && (p.desiredKind === 'EXECUTING' || p.desiredKind === 'ATTENTION'))
+		const cmdRunning = s.prompts.some((p) => p.isCmd && p.desiredKind === 'EXECUTING')
+		if (!promptActive && !cmdRunning) {
+			const nextCmd = pickPending(s, true)
+			if (nextCmd) dispatchCmd(nextCmd)
+		}
 	}
 
 	for (const label of live) {

@@ -57,9 +57,13 @@ superapp-2
   (the 2nd window, not the claude pane). They run **one at a time**: a command is
   marked `[EXECUTING]` when dispatched and only advances to `[DONE]` once it has
   actually **exited** (the controller appends `; echo $status > state/<label>.cmd`
-  and waits for that done-file), then the next queued command fires. Delete the
-  `[DONE]` line to run the command again. A command that never exits (e.g. a
-  server) stays `[EXECUTING]` and blocks later commands — by design.
+  and waits for that done-file), then the next queued command fires. A command
+  only fires once **nothing else in the session is running** — it waits for the
+  previous item, whether a prompt or a command, to finish, so a `!command` never
+  races an in-flight prompt (e.g. `!git push` above `: make the change` runs only
+  after the prompt is done). Delete the `[DONE]` line to run the command again. A
+  command that never exits (e.g. a server) stays `[EXECUTING]` and blocks later
+  commands — by design.
 - Markers are written by the supervisor per prompt: `[EXECUTING]` → `[DONE]`, or
   `[NEEDS ATTENTION]` (replaces the prompt's marker when Claude blocks waiting for
   input mid-task). Only the **current** task keeps a marker — when a new task is
