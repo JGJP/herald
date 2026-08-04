@@ -61,6 +61,8 @@ interface Session {
 	desiredSession: string | null
 }
 
+// A prompt line starts with `prompt:` or the shorthand `:`.
+const PROMPT_RE = /^(?:prompt:|:)\s*/i
 const isAttention = (x: string | null): boolean => !!x && /NEEDS ATTENTION/i.test(x)
 const clearAttention = (s: Session) => {
 	if (isAttention(s.desiredSession)) s.desiredSession = null
@@ -93,9 +95,9 @@ export function parse(content: string): { lines: string[]; sessions: Session[] }
 		if (!cur) continue
 		cur.lastChildIdx = i
 		const t = line.trim()
-		if (/^prompt:/i.test(t)) {
+		if (PROMPT_RE.test(t)) {
 			cur.prompts.push({
-				text: t.replace(/^prompt:\s*/i, ''),
+				text: t.replace(PROMPT_RE, ''),
 				lineIdx: i,
 				indent: tabs,
 				marker: null,

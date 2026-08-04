@@ -90,6 +90,17 @@ const nb = parse(single)
 check('single-session file parses', nb.sessions.length === 1 && nb.sessions[0].prompts.length === 2)
 check('single-session round-trips', applyOps(nb.lines, buildOps(nb.sessions)).join('\n') === single)
 
+// 5b. `:` is shorthand for `prompt:` (and round-trips verbatim).
+const shorthand = 'alpha\n\t: do a\n\tprompt: do b\n\t:do c\n'
+const sh = parse(shorthand)
+check(
+	'`:` shorthand parses as prompts',
+	sh.sessions[0].prompts.length === 3 &&
+		sh.sessions[0].prompts.map((p) => p.text).join(',') === 'do a,do b,do c',
+	JSON.stringify(sh.sessions[0].prompts.map((p) => p.text)),
+)
+check('`:` shorthand round-trips', applyOps(sh.lines, buildOps(sh.sessions)).join('\n') === shorthand)
+
 // 6. Path-form headers: label = basename, bare names still map by name.
 const pathFile = '~/_dev/_startale/superapp\n\tprompt: hi\n/abs/path/foo\nbarename\n'
 const pf = parse(pathFile)

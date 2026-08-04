@@ -49,8 +49,8 @@ superapp-2
   - a **path** (`/abs`, `~/…`, or anything containing `/`) → that dir, with the
     label/tmux name taken from its basename (e.g. `~/_dev/_startale/superapp` →
     `__superapp`). Use this to point sessions anywhere on disk.
-- `prompt: …` lines under a session are a **queue**. They drain **bottom-to-top**
-  (oldest at the bottom; append new tasks at the top).
+- `prompt: …` lines under a session are a **queue** (`: …` is shorthand). They
+  drain **bottom-to-top** (oldest at the bottom; append new tasks at the top).
 - Markers are written by the supervisor: `[DONE]`, `[EXECUTING]` per prompt;
   `[NEEDS ATTENTION]` per session (Claude is idle/asking with nothing queued).
 
