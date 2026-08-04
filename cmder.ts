@@ -317,18 +317,30 @@ async function shellPane(label: string): Promise<string | null> {
 	return null
 }
 
-async function typeInto(pane: string, text: string) {
-	await $({ nothrow: true, quiet: true })`tmux send-keys -t ${pane} -l -- ${text}`
+async function typeInto(pane: string, text: string, vimInsert = false) {
+	const tm = $({ nothrow: true, quiet: true })
+	// Claude runs with vim keybindings: drop to normal mode then re-enter insert so
+	// the text lands as input, not as normal-mode commands. The gap after Escape
+	// keeps the terminal from folding Esc+i into a single Alt-i meta key.
+	if (vimInsert) {
+		await tm`tmux send-keys -t ${pane} Escape`
+		await sleep(80)
+		await tm`tmux send-keys -t ${pane} i`
+		await sleep(80)
+	}
+	await tm`tmux send-keys -t ${pane} -l -- ${text}`
 	await sleep(120)
-	await $({ nothrow: true, quiet: true })`tmux send-keys -t ${pane} Enter`
+	await tm`tmux send-keys -t ${pane} Enter`
 }
 
-async function sendLine(label: string, text: string) {
+// `vimInsert` prep only makes sense for a running claude (prompts, /clear); the
+// launch line below is typed into the fish shell before claude starts.
+async function sendLine(label: string, text: string, vimInsert = false) {
 	if (DRY) {
 		log(`[dry] send ${T(label)}: ${JSON.stringify(text)}`)
 		return
 	}
-	await typeInto(await claudePane(label), text)
+	await typeInto(await claudePane(label), text, vimInsert)
 }
 
 // Run a `!command` line in the session's shell window. We append a sentinel that
@@ -527,9 +539,9 @@ async function tick(rt: Rt) {
 
 		if (hadActiveCmd && cmdDoneMtime !== null && cmdDoneMtime > cmdSentAtBefore) rmCmdDone(label)
 		for (const d of dispatches) {
-			if (d.type === 'prompt') actions.push(() => sendLine(label, d.text!))
+			if (d.type === 'prompt') actions.push(() => sendLine(label, d.text!, true))
 			else if (d.type === 'cmd') actions.push(() => sendCmd(label, d.text!))
-			else if (d.type === 'clear') actions.push(() => sendLine(label, '/clear'))
+			else if (d.type === 'clear') actions.push(() => sendLine(label, '/clear', true))
 		}
 	}
 
