@@ -43,7 +43,12 @@ function resolveTarget(header: string): { label: string; dir: string } {
 
 // ---------------------------------------------------------------- parse model
 
-type Kind = 'EXECUTING' | 'DONE'
+type Kind = 'EXECUTING' | 'DONE' | 'ATTENTION'
+const MARKER: Record<Kind, string> = {
+	EXECUTING: '[EXECUTING]',
+	DONE: '[DONE]',
+	ATTENTION: '[NEEDS ATTENTION]',
+}
 interface Prompt {
 	text: string
 	lineIdx: number
@@ -106,11 +111,13 @@ export function parse(content: string): { lines: string[]; sessions: Session[] }
 		} else if (/^\[.*\]$/.test(t)) {
 			const kind: Kind | null = /executing/i.test(t)
 				? 'EXECUTING'
-				: /done/i.test(t)
-					? 'DONE'
-					: null
-			// EXECUTING/DONE attach to the nearest preceding prompt without a
-			// marker; anything else (incl. NEEDS ATTENTION) is a session marker.
+				: /attention/i.test(t)
+					? 'ATTENTION'
+					: /done/i.test(t)
+						? 'DONE'
+						: null
+			// A status marker attaches to the nearest preceding prompt without a
+			// marker; anything unrecognised (e.g. [NO DIR …]) is a session marker.
 			const target = kind ? [...cur.prompts].reverse().find((p) => !p.marker) : undefined
 			if (kind && target) {
 				target.marker = { kind, lineIdx: i }
@@ -136,9 +143,9 @@ export function buildOps(sessions: Session[]): Op[] {
 			if (cur === p.desiredKind) continue
 			if (p.marker) {
 				if (p.desiredKind === null) ops.push({ pos: p.marker.lineIdx, type: 'delete' })
-				else ops.push({ pos: p.marker.lineIdx, type: 'replace', text: `${p.indent}\t[${p.desiredKind}]` })
+				else ops.push({ pos: p.marker.lineIdx, type: 'replace', text: `${p.indent}\t${MARKER[p.desiredKind]}` })
 			} else if (p.desiredKind !== null) {
-				ops.push({ pos: p.lineIdx, type: 'insert', text: `${p.indent}\t[${p.desiredKind}]` })
+				ops.push({ pos: p.lineIdx, type: 'insert', text: `${p.indent}\t${MARKER[p.desiredKind]}` })
 			}
 		}
 		const cur = s.sessionMarker?.text ?? null
@@ -323,38 +330,37 @@ async function tick(rt: Rt) {
 			rt[label].starting = false
 		}
 		if (s.desiredSession && /NO DIR/i.test(s.desiredSession)) s.desiredSession = null
+		// Attention is a per-prompt marker now; strip any legacy session-level one.
+		clearAttention(s)
 		rt[label] ??= { starting: false, startedAt: 0, sentAt: 0, prevPromptCount: s.prompts.length }
 
 		const st = readState(label)
 		const promptCount = s.prompts.length
 		const prev = rt[label].prevPromptCount
-		const exec = s.prompts.find((p) => p.desiredKind === 'EXECUTING')
+		// EXECUTING and ATTENTION are both "the currently active prompt".
+		const exec = s.prompts.find((p) => p.desiredKind === 'EXECUTING' || p.desiredKind === 'ATTENTION')
 
 		if (exec) {
 			if (st && st.event === 'Stop' && st.mtimeMs > rt[label].sentAt) {
 				exec.desiredKind = 'DONE'
-				clearAttention(s)
 				const next = pickNext(s)
 				if (next) {
 					next.desiredKind = 'EXECUTING'
 					rt[label].sentAt = Date.now()
 					actions.push(() => sendLine(label, next.text))
 				}
+			} else if (st && st.event === 'Notification' && st.mtimeMs > rt[label].sentAt) {
+				// Claude is blocked waiting for input mid-task: flag this prompt.
+				exec.desiredKind = 'ATTENTION'
 			}
 		} else if (prev >= 1 && promptCount === 0) {
-			clearAttention(s)
 			actions.push(() => sendLine(label, '/clear'))
 		} else {
 			const next = pickNext(s)
 			if (next) {
 				next.desiredKind = 'EXECUTING'
 				rt[label].sentAt = Date.now()
-				clearAttention(s)
 				actions.push(() => sendLine(label, next.text))
-			} else if (st && st.event === 'Notification') {
-				s.desiredSession = '[NEEDS ATTENTION]'
-			} else {
-				clearAttention(s)
 			}
 		}
 		rt[label].prevPromptCount = promptCount

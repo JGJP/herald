@@ -19,7 +19,8 @@ const example = [
 	'\t\t\t[DONE]',
 	'superapp-2',
 	'\tbrief description of currently executing task',
-	'\t\t[NEEDS ATTENTION]',
+	'\t\tprompt: investigate the flaky test',
+	'\t\t\t[NEEDS ATTENTION]',
 	'superapp-3',
 	'\thttps://github.com/link-to-pr',
 	'\t\tprompt: /handle-pr-comments',
@@ -61,7 +62,12 @@ check(
 		sa.prompts[1].marker?.kind === 'EXECUTING' &&
 		sa.prompts[2].marker?.kind === 'DONE',
 )
-check('superapp-2 has NEEDS ATTENTION session marker', /NEEDS ATTENTION/.test(sessions[1].desiredSession ?? ''))
+check(
+	'superapp-2 attention is a per-prompt marker (not session-level)',
+	sessions[1].prompts.length === 1 &&
+		sessions[1].prompts[0].marker?.kind === 'ATTENTION' &&
+		sessions[1].desiredSession === null,
+)
 check('superapp-3 has 1 prompt (/handle-pr-comments)', sessions[2].prompts.length === 1 && sessions[2].prompts[0].text === '/handle-pr-comments')
 
 // 3. Marker mutation: set top prompt EXECUTING, mid DONE -> only those lines change.
@@ -78,11 +84,21 @@ check(
 		!mutated.includes('[EXECUTING]\n\t\tprompt: please start'),
 )
 
-// 4. Session marker clear: superapp-2 attention -> null removes the line.
+// 4. Attention is a per-prompt marker: promoting it to [DONE] rewrites the
+// prompt's own marker in place (no stray session-level line).
 const m2 = parse(example)
-m2.sessions[1].desiredSession = null
-const cleared = applyOps(m2.lines, buildOps(m2.sessions)).join('\n')
-check('clearing attention removes the marker line', !cleared.includes('[NEEDS ATTENTION]') && cleared.includes('superapp-2\n\tbrief description of currently executing task\nsuperapp-3'))
+m2.sessions[1].prompts[0].desiredKind = 'DONE'
+const settled = applyOps(m2.lines, buildOps(m2.sessions)).join('\n')
+check(
+	'attention -> done rewrites the prompt marker in place',
+	settled.includes('prompt: investigate the flaky test\n\t\t\t[DONE]') && !settled.includes('[NEEDS ATTENTION]'),
+)
+
+// 4b. Clearing the marker (desiredKind -> null) removes just that line.
+const m2b = parse(example)
+m2b.sessions[1].prompts[0].desiredKind = null
+const cleared = applyOps(m2b.lines, buildOps(m2b.sessions)).join('\n')
+check('clearing attention removes the marker line', !cleared.includes('[NEEDS ATTENTION]') && cleared.includes('prompt: investigate the flaky test\nsuperapp-3'))
 
 // 5. Minimal file with a single session.
 const single = 'alpha\n\tprompt: do a\n\tprompt: do b\n'

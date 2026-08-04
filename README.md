@@ -41,7 +41,9 @@ superapp
 		prompt: please start working on X
 			[DONE]
 superapp-2
-	[NEEDS ATTENTION]
+	brief description (freeform, ignored)
+		prompt: investigate the flaky test
+			[NEEDS ATTENTION]
 ```
 
 - A line at column 0 is a **session**. It is either:
@@ -51,8 +53,9 @@ superapp-2
     `__superapp`). Use this to point sessions anywhere on disk.
 - `prompt: …` lines under a session are a **queue** (`: …` is shorthand). They
   drain **bottom-to-top** (oldest at the bottom; append new tasks at the top).
-- Markers are written by the supervisor: `[DONE]`, `[EXECUTING]` per prompt;
-  `[NEEDS ATTENTION]` per session (Claude is idle/asking with nothing queued).
+- Markers are written by the supervisor per prompt: `[EXECUTING]` → `[DONE]`, or
+  `[NEEDS ATTENTION]` (replaces the prompt's marker when Claude blocks waiting for
+  input mid-task). A completed prompt that then sits idle stays `[DONE]`.
 
 ## What edits do
 
@@ -62,7 +65,7 @@ superapp-2
 | Add a `prompt:` line | Sends it (once the running one finishes); marks `[EXECUTING]` → `[DONE]` |
 | Delete all prompts under a session | Sends `/clear` (session stays alive, idle) |
 | Delete the session name | Kills the tmux session |
-| Answer a `[NEEDS ATTENTION]` prompt | Type directly into the tmux; state follows |
+| Answer a `[NEEDS ATTENTION]` prompt | Type directly into the tmux; the marker returns to `[DONE]` when Claude finishes |
 
 Each spawned session has **two windows**: window `claude` (driven by the
 controller) and window `shell` (a free shell for you to run commands in). The
