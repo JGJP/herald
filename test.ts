@@ -166,7 +166,7 @@ const drain = (initial: string, maxTicks = 50) => {
 			cmdDoneMtime: active?.isCmd ? clock : null,
 		}
 		const disp = planQueue(s, rt, io)
-		for (const d of disp) order.push(d.type === 'clear' ? 'clear' : `${d.type}:${d.text}`)
+		for (const d of disp) order.push(d.type === 'clear' || d.type === 'show' ? d.type : `${d.type}:${d.text}`)
 		content = applyOps(lines, buildOps(sessions)).join('\n')
 		markerCounts.push((content.match(/\[(EXECUTING|DONE|NEEDS ATTENTION)\]/g) ?? []).length)
 		if (!active && disp.length === 0) break
@@ -262,14 +262,26 @@ const clearBarrier = (() => {
 check('a `#` barrier suppresses the /clear', JSON.stringify(clearBarrier.held) === JSON.stringify([]), JSON.stringify(clearBarrier.held))
 check('the /clear fires once the `#` barrier is removed', JSON.stringify(clearBarrier.released) === JSON.stringify([{ type: 'clear' }]), JSON.stringify(clearBarrier.released))
 
-// 5f. A bare `show` line is a one-shot request to focus the session in tmux: parsing
-// records it (not as a prompt), it round-trips while pending, and once fired (acted
-// on) buildOps deletes the line so the request is consumed.
+// 5f. A bare `show` line is a queue item (isShow) that switches the tmux client
+// when the drain reaches it. Parsing records it as a non-prompt queue item; it
+// round-trips while pending; and once fired buildOps deletes the line (consumed).
 const showParse = parse('alpha\n\t: do a\n\tshow\n')
-check('bare `show` is recorded as a session directive, not a prompt', showParse.sessions[0].show !== null && showParse.sessions[0].prompts.length === 1)
+const showItem = showParse.sessions[0].prompts.find((p) => p.isShow)
+check('bare `show` parses as an isShow queue item (not a prompt/command)', !!showItem && showParse.sessions[0].prompts.length === 2 && showParse.sessions[0].prompts.filter((p) => !p.isShow).length === 1)
 check('an unfired `show` round-trips verbatim', applyOps(showParse.lines, buildOps(showParse.sessions)).join('\n') === 'alpha\n\t: do a\n\tshow\n')
-showParse.sessions[0].showFired = true
+showItem!.fired = true
 check('a fired `show` is deleted from the file', applyOps(showParse.lines, buildOps(showParse.sessions)).join('\n') === 'alpha\n\t: do a\n')
+
+// `show` drains in queue order: it fires only after the item below it is done, and
+// before the item above it runs. The `show` line is consumed (deleted) when it fires.
+const showQueue = drain('alpha\n\t: after\n\tshow\n\t: before\n')
+check('show runs in queue order (below done → show → above)', JSON.stringify(showQueue.order) === JSON.stringify(['prompt:before', 'show', 'prompt:after']), JSON.stringify(showQueue.order))
+check('a fired show leaves the file without the show line', !showQueue.content.includes('show') && showQueue.content.includes(': after\n\t\t[DONE]'), JSON.stringify(showQueue.content))
+check('show never adds a second marker', showQueue.markerCounts.every((n) => n <= 1), JSON.stringify(showQueue.markerCounts))
+
+// A `show` sitting above a `#` barrier waits: the barrier halts the drain before it.
+const showBehindBarrier = drain('alpha\n\tshow\n\t# manual\n\t: first\n')
+check('show behind a `#` barrier does not fire', !showBehindBarrier.order.includes('show') && JSON.stringify(showBehindBarrier.order) === JSON.stringify(['prompt:first']), JSON.stringify(showBehindBarrier.order))
 
 // 5e. Spawn gate: only spawn a session once there's something to input. A bare
 // header (or a fully drained one) has nothing pending, so it stays unspawned.
@@ -297,6 +309,7 @@ const aliased = parse('app\n\tprompt: hi\nbarename\n', { app: '/opt/repos/supera
 check('alias header -> mapped path, label = alias', aliased.sessions[0].label === 'app' && aliased.sessions[0].dir === '/opt/repos/superapp', `${aliased.sessions[0].label} / ${aliased.sessions[0].dir}`)
 check('alias `~` expands to home', parse('other\n', { other: '~/x' }).sessions[0].dir.endsWith('/x') && !parse('other\n', { other: '~/x' }).sessions[0].dir.startsWith('~'))
 check('non-aliased bare name still maps to ~/_dev/<name>', aliased.sessions[1].dir.endsWith('/_dev/barename'))
+
 
 // 7. Blank lines between sessions are skipped but preserved on round-trip.
 const withBlanks = 'superapp\n\tprompt: do a thing\n\nsuperapp-2\n\tprompt: do another\n'

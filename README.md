@@ -74,10 +74,12 @@ superapp-2
   never gets a marker — until **you delete the line**. Put one above work that must
   wait on a manual step (e.g. `# rotate the staging secret`). A `#` at the very
   bottom blocks the whole session until removed.
-- A bare `show` line brings the session **on screen**: the supervisor switches your
+- A bare `show` line is a **queue item** that brings the session **on screen**: when
+  the drain reaches it (the item below it is done), the supervisor switches your
   attached tmux client (e.g. the terminal you have open in WezTerm) to it, then
-  deletes the `show` line — it's a one-shot request. If the session isn't running
-  yet it's spawned first, then shown once live.
+  deletes the `show` line — a one-shot request, ordered like everything else in the
+  queue. If the session isn't running yet it's spawned first, then shown when its
+  turn comes.
 - Only the **current** item keeps a marker — it is the *frontier*: items above it
   (nearer the top) are still pending, items below it have already run. When the
   next item is marked `[EXECUTING]`, the previous marker is stripped, so at most
@@ -92,7 +94,7 @@ superapp-2
 | Add a `prompt:` line | Queues it; sends it to the claude pane when it reaches the front (the item below is done); marks `[EXECUTING]` → `[DONE]` |
 | Add a `$command` line | Queues it; runs it once in the shell window when it reaches the front; marks `[EXECUTING]` → `[DONE]` when it exits |
 | Add a `#` line | Halts the queue at that point until you delete the line (a human-action barrier) |
-| Add a `show` line | Switches your attached tmux client to this session, then deletes the line |
+| Add a `show` line | When the queue reaches it, switches your attached tmux client to this session, then deletes the line |
 | Delete all prompts under a session | Sends `/clear` (session stays alive, idle) |
 | Delete the session name | Kills the tmux session |
 | Answer a `[NEEDS ATTENTION]` prompt | Type directly into the tmux; the marker returns to `[DONE]` when Claude finishes |

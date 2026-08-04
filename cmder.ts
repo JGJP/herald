@@ -82,6 +82,12 @@ interface Prompt {
 	// A `#` line: a human action. It never runs or gets a marker; when the drain
 	// reaches it the queue halts there until the line is removed.
 	isBarrier: boolean
+	// A bare `show` line: a queue item that, when the drain reaches it (the item
+	// below is done), switches the attached tmux client to this session. It fires
+	// instantly and never gets a marker; `fired` is set that tick so buildOps
+	// deletes the line — the request is consumed, not left as clutter.
+	isShow: boolean
+	fired: boolean
 }
 interface Session {
 	label: string
@@ -91,11 +97,6 @@ interface Session {
 	prompts: Prompt[]
 	sessionMarker: { text: string; lineIdx: number } | null
 	desiredSession: string | null
-	// A bare `show` line: a one-shot request to bring this session on screen in the
-	// attached tmux client. `showFired` is set once we act on it, so buildOps deletes
-	// the line (the request is consumed, not left as clutter).
-	show: { lineIdx: number } | null
-	showFired: boolean
 }
 
 // A prompt line starts with `prompt:` or the shorthand `:`.
@@ -129,8 +130,6 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 				prompts: [],
 				sessionMarker: null,
 				desiredSession: null,
-				show: null,
-				showFired: false,
 			}
 			sessions.push(cur)
 			continue
@@ -147,6 +146,8 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 				desiredKind: null,
 				isCmd: false,
 				isBarrier: false,
+				isShow: false,
+				fired: false,
 			})
 		} else if (CMD_RE.test(t)) {
 			cur.prompts.push({
@@ -157,6 +158,8 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 				desiredKind: null,
 				isCmd: true,
 				isBarrier: false,
+				isShow: false,
+				fired: false,
 			})
 		} else if (BARRIER_RE.test(t)) {
 			cur.prompts.push({
@@ -167,9 +170,21 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 				desiredKind: null,
 				isCmd: false,
 				isBarrier: true,
+				isShow: false,
+				fired: false,
 			})
 		} else if (/^show$/i.test(t)) {
-			cur.show = { lineIdx: i }
+			cur.prompts.push({
+				text: '',
+				lineIdx: i,
+				indent: tabs,
+				marker: null,
+				desiredKind: null,
+				isCmd: false,
+				isBarrier: false,
+				isShow: true,
+				fired: false,
+			})
 		} else if (/^\[.*\]$/.test(t)) {
 			const kind: Kind | null = /executing/i.test(t)
 				? 'EXECUTING'
@@ -180,7 +195,7 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 						: null
 			// A status marker attaches to the nearest preceding prompt without a
 			// marker; anything unrecognised (e.g. [NO DIR …]) is a session marker.
-			const target = kind ? [...cur.prompts].reverse().find((p) => !p.marker && !p.isBarrier) : undefined
+			const target = kind ? [...cur.prompts].reverse().find((p) => !p.marker && !p.isBarrier && !p.isShow) : undefined
 			if (kind && target) {
 				target.marker = { kind, lineIdx: i }
 				target.desiredKind = kind
@@ -201,6 +216,11 @@ export function buildOps(sessions: Session[]): Op[] {
 	const ops: Op[] = []
 	for (const s of sessions) {
 		for (const p of s.prompts) {
+			// A fired `show` item is consumed by deleting its line; it has no marker.
+			if (p.isShow) {
+				if (p.fired) ops.push({ pos: p.lineIdx, type: 'delete' })
+				continue
+			}
 			const cur = p.marker?.kind ?? null
 			if (cur === p.desiredKind) continue
 			if (p.marker) {
@@ -210,8 +230,6 @@ export function buildOps(sessions: Session[]): Op[] {
 				ops.push({ pos: p.lineIdx, type: 'insert', text: `${p.indent}\t${MARKER[p.desiredKind]}` })
 			}
 		}
-		// A fired `show` request is consumed by deleting its line.
-		if (s.show && s.showFired) ops.push({ pos: s.show.lineIdx, type: 'delete' })
 		const cur = s.sessionMarker?.text ?? null
 		if (cur === s.desiredSession) continue
 		if (s.sessionMarker) {
@@ -439,14 +457,15 @@ const atomicWrite = (content: string) => {
 
 // -------------------------------------------------------------- reconcile tick
 
-// Prompts and `$command` lines share ONE queue that drains bottom-to-top, one
-// item at a time in file order: an item runs only once the item below it (its
-// predecessor) has finished. A prompt runs in the claude pane (done on the
-// hook's Stop event); a command runs in the shell window (done when its done-file
-// is written). Exactly one item ever carries a marker — the "frontier": items
-// above it (smaller lineIdx) are pending, items below it have already run.
+// Prompts, `$command` lines, and `show` lines share ONE queue that drains
+// bottom-to-top, one item at a time in file order: an item runs only once the item
+// below it (its predecessor) has finished. A prompt runs in the claude pane (done
+// on the hook's Stop event); a command runs in the shell window (done when its
+// done-file is written); a `show` switches the tmux client and completes instantly,
+// consuming its own line. Exactly one item ever carries a marker — the "frontier":
+// items above it (smaller lineIdx) are pending, items below it have already run.
 
-export type DispatchType = 'prompt' | 'cmd' | 'clear'
+export type DispatchType = 'prompt' | 'cmd' | 'clear' | 'show'
 export interface Dispatch {
 	type: DispatchType
 	text?: string
@@ -493,7 +512,7 @@ const keepOnly = (s: Session, keep: Prompt | null) => {
 // w.r.t. I/O so it can be unit-tested by feeding synthetic events.
 export function planQueue(s: Session, rt: RtEntry, io: PlanIO): Dispatch[] {
 	const out: Dispatch[] = []
-	const promptCount = s.prompts.filter((p) => !p.isCmd && !p.isBarrier).length
+	const promptCount = s.prompts.filter((p) => !p.isCmd && !p.isBarrier && !p.isShow).length
 	const hasBarrier = s.prompts.some((p) => p.isBarrier)
 
 	const dispatch = (item: Prompt) => {
@@ -507,12 +526,23 @@ export function planQueue(s: Session, rt: RtEntry, io: PlanIO): Dispatch[] {
 		}
 		keepOnly(s, item)
 	}
-	// Advance past the item that just finished (now marked DONE) to its predecessor.
-	// A `#` barrier ahead halts the drain: keep the finished item as the frontier.
-	const advance = (from: Prompt) => {
-		const next = nearestAbove(s, from.lineIdx)
-		if (next && !next.isBarrier) dispatch(next)
-		else keepOnly(s, from) // queue drained or barrier ahead: hold the frontier here
+	// Walk up the queue from `cursor` (bottom-to-top): fire and consume any `show`
+	// items instantly (they switch the tmux client, then their line is deleted),
+	// until we reach a real item to dispatch, a `#` barrier (halt), or the top.
+	// `hold` (a just-finished item) keeps the frontier marker if nothing dispatches.
+	const drainUp = (cursor: number, hold: Prompt | null) => {
+		for (;;) {
+			const next = nearestAbove(s, cursor)
+			if (next?.isShow) {
+				out.push({ type: 'show' })
+				next.fired = true
+				cursor = next.lineIdx
+				continue
+			}
+			if (next && !next.isBarrier) dispatch(next)
+			else if (hold) keepOnly(s, hold) // drained or barrier ahead: hold the frontier
+			return
+		}
 	}
 
 	const active = s.prompts.find((p) => p.desiredKind === 'EXECUTING' || p.desiredKind === 'ATTENTION')
@@ -520,11 +550,11 @@ export function planQueue(s: Session, rt: RtEntry, io: PlanIO): Dispatch[] {
 		if (active.isCmd) {
 			if (io.cmdDoneMtime !== null && io.cmdDoneMtime > (rt.cmdSentAt ?? 0)) {
 				active.desiredKind = 'DONE'
-				advance(active)
+				drainUp(active.lineIdx, active)
 			}
 		} else if (io.state && io.state.event === 'Stop' && io.state.mtimeMs > rt.sentAt) {
 			active.desiredKind = 'DONE'
-			advance(active)
+			drainUp(active.lineIdx, active)
 		} else if (io.state && io.state.event === 'Notification' && io.state.mtimeMs > rt.sentAt) {
 			// Claude is blocked waiting for input mid-task: flag this prompt.
 			active.desiredKind = 'ATTENTION'
@@ -535,8 +565,7 @@ export function planQueue(s: Session, rt: RtEntry, io: PlanIO): Dispatch[] {
 	} else {
 		// Nothing running: dispatch the next pending item above the frontier (the
 		// top-most already-run item), or the bottom-most item on a fresh queue.
-		const next = nearestAbove(s, frontierIdx(s))
-		if (next && !next.isBarrier) dispatch(next) // a `#` barrier here halts the queue
+		drainUp(frontierIdx(s), null)
 	}
 
 	// A `#` barrier holds the whole queue, including a pending /clear: keep the
@@ -564,18 +593,12 @@ async function tick(rt: Rt) {
 		if (!live.has(label)) {
 			// Only spawn once there's something to feed the session; a bare header
 			// (or a fully drained one) gets no tmux session until work appears. A
-			// pending `show` also spawns it — you can't switch to a session that
-			// isn't there yet; the show then fires on a later tick once it's live.
-			if (!hasPendingInput(s) && !s.show) continue
-			rt[label] = { starting: true, startedAt: Date.now(), sentAt: 0, cmdSentAt: 0, prevPromptCount: s.prompts.filter((p) => !p.isCmd && !p.isBarrier).length }
+			// pending `show` counts as work — you can't switch to a session that
+			// isn't there yet — so it spawns, then fires when the drain reaches it.
+			if (!hasPendingInput(s)) continue
+			rt[label] = { starting: true, startedAt: Date.now(), sentAt: 0, cmdSentAt: 0, prevPromptCount: s.prompts.filter((p) => !p.isCmd && !p.isBarrier && !p.isShow).length }
 			actions.push(() => doSpawn(label, dir))
 			continue
-		}
-		// The session is live: honour a `show` request now (even mid-boot — the tmux
-		// session exists) and consume it by deleting the line.
-		if (s.show) {
-			actions.push(() => showSession(label))
-			s.showFired = true
 		}
 		if (rt[label]?.starting) {
 			if (Date.now() - rt[label].startedAt < READY_MS) continue
@@ -585,7 +608,7 @@ async function tick(rt: Rt) {
 		// Attention is a per-prompt marker now; strip any legacy session-level one.
 		clearAttention(s)
 
-		rt[label] ??= { starting: false, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: s.prompts.filter((p) => !p.isCmd && !p.isBarrier).length }
+		rt[label] ??= { starting: false, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: s.prompts.filter((p) => !p.isCmd && !p.isBarrier && !p.isShow).length }
 
 		// Capture what an in-flight command's completion would look like *before*
 		// planQueue mutates markers/timers, so we can clear its done-file afterwards.
@@ -600,6 +623,7 @@ async function tick(rt: Rt) {
 			if (d.type === 'prompt') actions.push(() => sendLine(label, d.text!, true))
 			else if (d.type === 'cmd') actions.push(() => sendCmd(label, d.text!))
 			else if (d.type === 'clear') actions.push(() => sendLine(label, '/clear', true))
+			else if (d.type === 'show') actions.push(() => showSession(label))
 		}
 	}
 
