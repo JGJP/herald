@@ -51,33 +51,35 @@ superapp-2
   - a **path** (`/abs`, `~/…`, or anything containing `/`) → that dir, with the
     label/tmux name taken from its basename (e.g. `~/_dev/_startale/superapp` →
     `__superapp`). Use this to point sessions anywhere on disk.
-- `prompt: …` lines under a session are a **queue** (`: …` is shorthand). They
-  drain **bottom-to-top** (oldest at the bottom; append new tasks at the top).
-- `!command` lines under a session run **once** in the session's **shell window**
-  (the 2nd window, not the claude pane). They run **one at a time**: a command is
-  marked `[EXECUTING]` when dispatched and only advances to `[DONE]` once it has
-  actually **exited** (the controller appends `; echo $status > state/<label>.cmd`
-  and waits for that done-file), then the next queued command fires. A command
-  only fires once **nothing else in the session is running** — it waits for the
-  previous item, whether a prompt or a command, to finish, so a `!command` never
-  races an in-flight prompt (e.g. `!git push` above `: make the change` runs only
-  after the prompt is done). Delete the `[DONE]` line to run the command again. A
-  command that never exits (e.g. a server) stays `[EXECUTING]` and blocks later
-  commands — by design.
-- Markers are written by the supervisor per prompt: `[EXECUTING]` → `[DONE]`, or
-  `[NEEDS ATTENTION]` (replaces the prompt's marker when Claude blocks waiting for
-  input mid-task). Only the **current** task keeps a marker — when a new task is
-  marked `[EXECUTING]`/`[DONE]`, the earlier tasks' `[EXECUTING]`/`[DONE]` lines are
-  stripped, so at most one prompt marker is shown (the active one, or the final
-  `[DONE]` once the queue drains).
+- `prompt: …` lines (`: …` is shorthand) and `!command` lines under a session form
+  **one queue** that drains **bottom-to-top**, **one item at a time in file order**
+  (oldest at the bottom; append new work at the top). An item runs only once the
+  item **below** it — whether a prompt or a command — has finished, so the two
+  never overlap and their relative order is exactly their order in the file.
+- `prompt:` lines run in the **claude pane**; the supervisor marks one `[EXECUTING]`
+  and advances it to `[DONE]` when Claude signals it finished (the hook's Stop
+  event). `[NEEDS ATTENTION]` replaces the marker when Claude blocks waiting for
+  input mid-task.
+- `!command` lines run **once** in the session's **shell window** (the 2nd window,
+  not the claude pane). A command is marked `[EXECUTING]` when dispatched and only
+  advances to `[DONE]` once it has actually **exited** (the controller appends
+  `; echo $status > state/<label>.cmd` and waits for that done-file). A command
+  that never exits (e.g. a server) stays `[EXECUTING]` and blocks the rest of the
+  queue — by design. So e.g. `!git push` placed above `: make the change` runs only
+  after that prompt is done.
+- Only the **current** item keeps a marker — it is the *frontier*: items above it
+  (nearer the top) are still pending, items below it have already run. When the
+  next item is marked `[EXECUTING]`, the previous marker is stripped, so at most
+  one marker is ever shown (the active one, or the final `[DONE]` once the queue
+  drains). Delete that final `[DONE]` to re-run the whole queue from the bottom.
 
 ## What edits do
 
 | You do | Supervisor does |
 | --- | --- |
 | Add a session (bare name or path; the dir must exist) | Spawns `tmux` session `__<label>` running `claude` in that dir |
-| Add a `prompt:` line | Sends it (once the running one finishes); marks `[EXECUTING]` → `[DONE]` |
-| Add a `!command` line | Runs it once in the shell window; marks `[EXECUTING]` → `[DONE]` when it exits |
+| Add a `prompt:` line | Queues it; sends it to the claude pane when it reaches the front (the item below is done); marks `[EXECUTING]` → `[DONE]` |
+| Add a `!command` line | Queues it; runs it once in the shell window when it reaches the front; marks `[EXECUTING]` → `[DONE]` when it exits |
 | Delete all prompts under a session | Sends `/clear` (session stays alive, idle) |
 | Delete the session name | Kills the tmux session |
 | Answer a `[NEEDS ATTENTION]` prompt | Type directly into the tmux; the marker returns to `[DONE]` when Claude finishes |

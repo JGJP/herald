@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-import { applyOps, buildOps, clearOtherTaskMarkers, parse } from './cmder'
+import { applyOps, buildOps, parse, planQueue } from './cmder'
 
 let failures = 0
 const check = (name: string, cond: boolean, detail?: string) => {
@@ -145,30 +145,83 @@ check(
 )
 check('`!` executing command round-trips', applyOps(rn.lines, buildOps(rn.sessions)).join('\n') === running)
 
-// 5d. Marking a new task strips the earlier tasks' [EXECUTING]/[DONE] markers.
-const acc = 'alpha\n\t: newest\n\t: mid\n\t\t[EXECUTING]\n\t: old\n\t\t[DONE]\n'
-const ac = parse(acc)
-const asess = ac.sessions[0]
-const newest = asess.prompts.find((p) => p.text === 'newest')!
-newest.desiredKind = 'EXECUTING'
-clearOtherTaskMarkers(asess, newest)
-const collapsed = applyOps(ac.lines, buildOps(ac.sessions)).join('\n')
+// 5d. planQueue: prompts and commands drain as ONE queue, bottom-to-top, one at a
+// time. `drain` simulates ticks, completing whatever is active each tick (a prompt
+// via a Stop event, a command via its done-file), round-tripping through the file
+// (parse -> plan -> applyOps) exactly like the live loop, and records dispatch order.
+const drain = (initial: string, maxTicks = 50) => {
+	let content = initial
+	const rt = { starting: false, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: initial.match(/^\t(?:prompt:|:)/gm)?.length ?? 0 }
+	let clock = 1000
+	const order: string[] = []
+	const markerCounts: number[] = []
+	for (let i = 0; i < maxTicks; i++) {
+		clock += 100
+		const { lines, sessions } = parse(content)
+		const s = sessions[0]
+		const active = s.prompts.find((p) => p.desiredKind === 'EXECUTING' || p.desiredKind === 'ATTENTION')
+		const io = {
+			now: clock,
+			state: active && !active.isCmd ? { event: 'Stop', mtimeMs: clock } : null,
+			cmdDoneMtime: active?.isCmd ? clock : null,
+		}
+		const disp = planQueue(s, rt, io)
+		for (const d of disp) order.push(d.type === 'clear' ? 'clear' : `${d.type}:${d.text}`)
+		content = applyOps(lines, buildOps(sessions)).join('\n')
+		markerCounts.push((content.match(/\[(EXECUTING|DONE|NEEDS ATTENTION)\]/g) ?? []).length)
+		if (!active && disp.length === 0) break
+	}
+	return { order, content, markerCounts }
+}
+
+// The reported failing case: interleaved commands and prompts must run in file
+// order (bottom-to-top), NOT with all commands shoved after all prompts.
+const interleaved = drain('bot-cmder\n\t! label hi2\n\t: say hello\n\t! label hi\n\t: /c\n')
 check(
-	'marking a new task removes earlier task markers',
-	(collapsed.match(/\[EXECUTING\]/g) ?? []).length === 1 &&
-		!collapsed.includes('[DONE]') &&
-		collapsed.includes(': newest\n\t\t[EXECUTING]'),
-	JSON.stringify(collapsed),
+	'interleaved queue drains in bottom-to-top file order',
+	JSON.stringify(interleaved.order) === JSON.stringify(['prompt:/c', 'cmd:label hi', 'prompt:say hello', 'cmd:label hi2']),
+	JSON.stringify(interleaved.order),
 )
-// ATTENTION on another task and command markers are left untouched.
-const keepIt = parse('alpha\n\t: a\n\t\t[NEEDS ATTENTION]\n\t: b\n\t!cmd\n\t\t[DONE]\n')
-const ks = keepIt.sessions[0]
-clearOtherTaskMarkers(ks, ks.prompts.find((p) => p.text === 'b')!)
-check(
-	'clearing task markers leaves attention and command markers alone',
-	ks.prompts.find((p) => p.text === 'a')!.desiredKind === 'ATTENTION' &&
-		ks.prompts.find((p) => p.isCmd)!.desiredKind === 'DONE',
-)
+check('interleaved: never more than one marker at a time', interleaved.markerCounts.every((n) => n <= 1), JSON.stringify(interleaved.markerCounts))
+
+// Pure prompts drain bottom-to-top with no re-runs, ending on a single [DONE].
+const proms = drain('alpha\n\t: newest\n\t: mid\n\t: old\n')
+check('pure prompts drain oldest-first, no re-run', JSON.stringify(proms.order) === JSON.stringify(['prompt:old', 'prompt:mid', 'prompt:newest']), JSON.stringify(proms.order))
+check('drained queue keeps exactly one [DONE] on the frontier (newest)', proms.content.includes(': newest\n\t\t[DONE]') && (proms.content.match(/\[DONE\]/g) ?? []).length === 1, JSON.stringify(proms.content))
+
+// Pure commands drain bottom-to-top, one at a time.
+const cmds2 = drain('alpha\n\t!a\n\t!b\n\t!c\n')
+check('pure commands drain bottom-to-top', JSON.stringify(cmds2.order) === JSON.stringify(['cmd:c', 'cmd:b', 'cmd:a']), JSON.stringify(cmds2.order))
+
+// A command waits for the prompt below it before firing (the core requirement).
+const gated = drain('alpha\n\t!git push\n\t: make the change\n')
+check('command waits for the prompt below it', JSON.stringify(gated.order) === JSON.stringify(['prompt:make the change', 'cmd:git push']), JSON.stringify(gated.order))
+
+// Attention: a mid-task Notification flags the prompt, a later Stop completes it.
+const attn = (() => {
+	let content = 'alpha\n\t: fix the bug\n'
+	const rt = { starting: false, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: 1 }
+	const step = (io: Parameters<typeof planQueue>[2]) => {
+		const { lines, sessions } = parse(content)
+		const d = planQueue(sessions[0], rt, io)
+		content = applyOps(lines, buildOps(sessions)).join('\n')
+		return d
+	}
+	step({ now: 100, state: null, cmdDoneMtime: null }) // dispatch the prompt
+	step({ now: 200, state: { event: 'Notification', mtimeMs: 200 }, cmdDoneMtime: null }) // blocks
+	const flagged = content.includes('[NEEDS ATTENTION]')
+	step({ now: 300, state: { event: 'Stop', mtimeMs: 300 }, cmdDoneMtime: null }) // answered -> done
+	return { flagged, content }
+})()
+check('notification flags [NEEDS ATTENTION], later stop resolves it', attn.flagged && attn.content.includes('[DONE]') && !attn.content.includes('[NEEDS ATTENTION]'), JSON.stringify(attn))
+
+// Deleting all prompts emits a /clear (and only then).
+const clearTest = (() => {
+	const rt = { starting: false, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: 2 }
+	const { sessions } = parse('alpha\n\t!keep me\n')
+	return planQueue(sessions[0], rt, { now: 100, state: null, cmdDoneMtime: null })
+})()
+check('removing all prompts triggers /clear', JSON.stringify(clearTest) === JSON.stringify([{ type: 'clear' }]), JSON.stringify(clearTest))
 
 // 6. Path-form headers: label = basename, bare names still map by name.
 const pathFile = '~/_dev/_startale/superapp\n\tprompt: hi\n/abs/path/foo\nbarename\n'

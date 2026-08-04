@@ -363,21 +363,91 @@ const atomicWrite = (content: string) => {
 
 // -------------------------------------------------------------- reconcile tick
 
-// Bottom-most pending item runs first (queue drains bottom-to-top). Prompts and
-// commands are separate queues (selected by the `cmd` flag), but a command only
-// fires once no prompt is active — see the command block in tick().
-const pickPending = (s: Session, cmd = false): Prompt | null => {
-	const pending = s.prompts.filter((p) => p.isCmd === cmd && p.desiredKind === null)
-	return pending.length ? pending.reduce((a, b) => (b.lineIdx > a.lineIdx ? b : a)) : null
+// Prompts and `!command` lines share ONE queue that drains bottom-to-top, one
+// item at a time in file order: an item runs only once the item below it (its
+// predecessor) has finished. A prompt runs in the claude pane (done on the
+// hook's Stop event); a command runs in the shell window (done when its done-file
+// is written). Exactly one item ever carries a marker — the "frontier": items
+// above it (smaller lineIdx) are pending, items below it have already run.
+
+export type DispatchType = 'prompt' | 'cmd' | 'clear'
+export interface Dispatch {
+	type: DispatchType
+	text?: string
+}
+export interface PlanIO {
+	now: number
+	state: { event: string; mtimeMs: number } | null
+	cmdDoneMtime: number | null
 }
 
-// Only the current task keeps a marker: when one is (re)marked, strip the
-// [EXECUTING]/[DONE] markers the earlier (already-processed) tasks left behind.
-export const clearOtherTaskMarkers = (s: Session, keep: Prompt) => {
+// Nearest pending item above `idx` (the next to run, drain being bottom-to-top).
+const nearestAbove = (s: Session, idx: number): Prompt | null => {
+	const cands = s.prompts.filter((p) => p.lineIdx < idx && p.desiredKind === null)
+	return cands.length ? cands.reduce((a, b) => (b.lineIdx > a.lineIdx ? b : a)) : null
+}
+
+// Only the frontier item keeps a marker: strip every other [EXECUTING]/[DONE].
+const keepOnly = (s: Session, keep: Prompt | null) => {
 	for (const p of s.prompts) {
-		if (p === keep || p.isCmd) continue
+		if (p === keep) continue
 		if (p.desiredKind === 'EXECUTING' || p.desiredKind === 'DONE') p.desiredKind = null
 	}
+}
+
+// Decide the next transition for one (spawned, ready) session. Mutates the items'
+// desiredKind and the runtime timers; returns the lines to send this tick. Pure
+// w.r.t. I/O so it can be unit-tested by feeding synthetic events.
+export function planQueue(s: Session, rt: RtEntry, io: PlanIO): Dispatch[] {
+	const out: Dispatch[] = []
+	const promptCount = s.prompts.filter((p) => !p.isCmd).length
+
+	const dispatch = (item: Prompt) => {
+		item.desiredKind = 'EXECUTING'
+		if (item.isCmd) {
+			rt.cmdSentAt = io.now
+			out.push({ type: 'cmd', text: item.text })
+		} else {
+			rt.sentAt = io.now
+			out.push({ type: 'prompt', text: item.text })
+		}
+		keepOnly(s, item)
+	}
+	// Advance past the item that just finished (now marked DONE) to its predecessor.
+	const advance = (from: Prompt) => {
+		const next = nearestAbove(s, from.lineIdx)
+		if (next) dispatch(next)
+		else keepOnly(s, from) // queue drained: keep the final [DONE] on the frontier
+	}
+
+	const active = s.prompts.find((p) => p.desiredKind === 'EXECUTING' || p.desiredKind === 'ATTENTION')
+	if (active) {
+		if (active.isCmd) {
+			if (io.cmdDoneMtime !== null && io.cmdDoneMtime > (rt.cmdSentAt ?? 0)) {
+				active.desiredKind = 'DONE'
+				advance(active)
+			}
+		} else if (io.state && io.state.event === 'Stop' && io.state.mtimeMs > rt.sentAt) {
+			active.desiredKind = 'DONE'
+			advance(active)
+		} else if (io.state && io.state.event === 'Notification' && io.state.mtimeMs > rt.sentAt) {
+			// Claude is blocked waiting for input mid-task: flag this prompt.
+			active.desiredKind = 'ATTENTION'
+		}
+	} else if (rt.prevPromptCount >= 1 && promptCount === 0) {
+		// Every prompt was deleted: reset the claude conversation.
+		out.push({ type: 'clear' })
+	} else {
+		// Nothing running: dispatch the next pending item above the frontier (the
+		// top-most already-run item), or the bottom-most item on a fresh queue.
+		const done = s.prompts.filter((p) => p.desiredKind === 'DONE')
+		const frontierIdx = done.length ? Math.min(...done.map((p) => p.lineIdx)) : Number.POSITIVE_INFINITY
+		const next = nearestAbove(s, frontierIdx)
+		if (next) dispatch(next)
+	}
+
+	rt.prevPromptCount = promptCount
+	return out
 }
 
 async function tick(rt: Rt) {
@@ -409,68 +479,21 @@ async function tick(rt: Rt) {
 		// Attention is a per-prompt marker now; strip any legacy session-level one.
 		clearAttention(s)
 
-		const promptCount = s.prompts.filter((p) => !p.isCmd).length
-		rt[label] ??= { starting: false, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: promptCount }
+		rt[label] ??= { starting: false, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: s.prompts.filter((p) => !p.isCmd).length }
 
-		const st = readState(label)
-		const prev = rt[label].prevPromptCount
-		// EXECUTING and ATTENTION are both "the currently active prompt".
-		const exec = s.prompts.find((p) => !p.isCmd && (p.desiredKind === 'EXECUTING' || p.desiredKind === 'ATTENTION'))
+		// Capture what an in-flight command's completion would look like *before*
+		// planQueue mutates markers/timers, so we can clear its done-file afterwards.
+		const cmdSentAtBefore = rt[label].cmdSentAt ?? 0
+		const hadActiveCmd = s.prompts.some((p) => p.isCmd && p.desiredKind === 'EXECUTING')
+		const cmdDoneMtime = readCmdDone(label)
 
-		if (exec) {
-			if (st && st.event === 'Stop' && st.mtimeMs > rt[label].sentAt) {
-				exec.desiredKind = 'DONE'
-				const next = pickPending(s)
-				if (next) {
-					next.desiredKind = 'EXECUTING'
-					rt[label].sentAt = Date.now()
-					actions.push(() => sendLine(label, next.text))
-				}
-				// Keep a marker only on the current task (the new EXECUTING one, or the
-				// just-finished DONE when the queue is drained); clear the earlier ones.
-				clearOtherTaskMarkers(s, next ?? exec)
-			} else if (st && st.event === 'Notification' && st.mtimeMs > rt[label].sentAt) {
-				// Claude is blocked waiting for input mid-task: flag this prompt.
-				exec.desiredKind = 'ATTENTION'
-			}
-		} else if (prev >= 1 && promptCount === 0) {
-			actions.push(() => sendLine(label, '/clear'))
-		} else {
-			const next = pickPending(s)
-			if (next) {
-				next.desiredKind = 'EXECUTING'
-				rt[label].sentAt = Date.now()
-				actions.push(() => sendLine(label, next.text))
-				clearOtherTaskMarkers(s, next)
-			}
-		}
-		rt[label].prevPromptCount = promptCount
+		const dispatches = planQueue(s, rt[label], { now: Date.now(), state: readState(label), cmdDoneMtime })
 
-		// Shell commands run in the shell window (2nd window), one at a time and
-		// only once the previous item — prompt or command — has finished. A command
-		// stays [EXECUTING] until its done-file (written when it exits) is newer than
-		// its dispatch; only then does it become [DONE]. We dispatch the next pending
-		// command only when nothing else in this session is running: no command is
-		// [EXECUTING] and no prompt is active (this tick's prompt dispatch is already
-		// reflected above), so a `!command` never races an in-flight prompt/command.
-		const dispatchCmd = (c: Prompt) => {
-			c.desiredKind = 'EXECUTING'
-			rt[label].cmdSentAt = Date.now()
-			actions.push(() => sendCmd(label, c.text))
-		}
-		const execCmd = s.prompts.find((p) => p.isCmd && p.desiredKind === 'EXECUTING')
-		if (execCmd) {
-			const done = readCmdDone(label)
-			if (done !== null && done > (rt[label].cmdSentAt ?? 0)) {
-				execCmd.desiredKind = 'DONE'
-				rmCmdDone(label)
-			}
-		}
-		const promptActive = s.prompts.some((p) => !p.isCmd && (p.desiredKind === 'EXECUTING' || p.desiredKind === 'ATTENTION'))
-		const cmdRunning = s.prompts.some((p) => p.isCmd && p.desiredKind === 'EXECUTING')
-		if (!promptActive && !cmdRunning) {
-			const nextCmd = pickPending(s, true)
-			if (nextCmd) dispatchCmd(nextCmd)
+		if (hadActiveCmd && cmdDoneMtime !== null && cmdDoneMtime > cmdSentAtBefore) rmCmdDone(label)
+		for (const d of dispatches) {
+			if (d.type === 'prompt') actions.push(() => sendLine(label, d.text!))
+			else if (d.type === 'cmd') actions.push(() => sendCmd(label, d.text!))
+			else if (d.type === 'clear') actions.push(() => sendLine(label, '/clear'))
 		}
 	}
 
