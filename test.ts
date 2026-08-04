@@ -262,6 +262,15 @@ const clearBarrier = (() => {
 check('a `#` barrier suppresses the /clear', JSON.stringify(clearBarrier.held) === JSON.stringify([]), JSON.stringify(clearBarrier.held))
 check('the /clear fires once the `#` barrier is removed', JSON.stringify(clearBarrier.released) === JSON.stringify([{ type: 'clear' }]), JSON.stringify(clearBarrier.released))
 
+// 5f. A bare `show` line is a one-shot request to focus the session in tmux: parsing
+// records it (not as a prompt), it round-trips while pending, and once fired (acted
+// on) buildOps deletes the line so the request is consumed.
+const showParse = parse('alpha\n\t: do a\n\tshow\n')
+check('bare `show` is recorded as a session directive, not a prompt', showParse.sessions[0].show !== null && showParse.sessions[0].prompts.length === 1)
+check('an unfired `show` round-trips verbatim', applyOps(showParse.lines, buildOps(showParse.sessions)).join('\n') === 'alpha\n\t: do a\n\tshow\n')
+showParse.sessions[0].showFired = true
+check('a fired `show` is deleted from the file', applyOps(showParse.lines, buildOps(showParse.sessions)).join('\n') === 'alpha\n\t: do a\n')
+
 // 5e. Spawn gate: only spawn a session once there's something to input. A bare
 // header (or a fully drained one) has nothing pending, so it stays unspawned.
 check('bare header has no pending input', !hasPendingInput(parse('alpha\n').sessions[0]))

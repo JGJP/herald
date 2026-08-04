@@ -91,6 +91,11 @@ interface Session {
 	prompts: Prompt[]
 	sessionMarker: { text: string; lineIdx: number } | null
 	desiredSession: string | null
+	// A bare `show` line: a one-shot request to bring this session on screen in the
+	// attached tmux client. `showFired` is set once we act on it, so buildOps deletes
+	// the line (the request is consumed, not left as clutter).
+	show: { lineIdx: number } | null
+	showFired: boolean
 }
 
 // A prompt line starts with `prompt:` or the shorthand `:`.
@@ -124,6 +129,8 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 				prompts: [],
 				sessionMarker: null,
 				desiredSession: null,
+				show: null,
+				showFired: false,
 			}
 			sessions.push(cur)
 			continue
@@ -161,6 +168,8 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 				isCmd: false,
 				isBarrier: true,
 			})
+		} else if (/^show$/i.test(t)) {
+			cur.show = { lineIdx: i }
 		} else if (/^\[.*\]$/.test(t)) {
 			const kind: Kind | null = /executing/i.test(t)
 				? 'EXECUTING'
@@ -201,6 +210,8 @@ export function buildOps(sessions: Session[]): Op[] {
 				ops.push({ pos: p.lineIdx, type: 'insert', text: `${p.indent}\t${MARKER[p.desiredKind]}` })
 			}
 		}
+		// A fired `show` request is consumed by deleting its line.
+		if (s.show && s.showFired) ops.push({ pos: s.show.lineIdx, type: 'delete' })
 		const cur = s.sessionMarker?.text ?? null
 		if (cur === s.desiredSession) continue
 		if (s.sessionMarker) {
@@ -401,6 +412,21 @@ async function doKill(label: string) {
 	await $({ nothrow: true, quiet: true })`tmux kill-session -t ${T(label)}`
 }
 
+// Bring this session on screen by switching every attached client (e.g. your
+// WezTerm terminal) to it. Run outside tmux there is no "current" client, so we
+// enumerate the clients and switch each — for a single-client setup that's exactly
+// the terminal you have open.
+async function showSession(label: string) {
+	log(`showing ${T(label)}`)
+	if (DRY) return
+	const tm = $({ nothrow: true, quiet: true })
+	const r = await tm`tmux list-clients -F ${'#{client_name}'}`
+	for (const line of r.stdout.split('\n')) {
+		const client = line.trim()
+		if (client) await tm`tmux switch-client -c ${client} -t ${T(label)}`
+	}
+}
+
 const atomicWrite = (content: string) => {
 	if (DRY) {
 		log('[dry] cmder-control would be rewritten')
@@ -537,11 +563,19 @@ async function tick(rt: Rt) {
 		}
 		if (!live.has(label)) {
 			// Only spawn once there's something to feed the session; a bare header
-			// (or a fully drained one) gets no tmux session until work appears.
-			if (!hasPendingInput(s)) continue
+			// (or a fully drained one) gets no tmux session until work appears. A
+			// pending `show` also spawns it — you can't switch to a session that
+			// isn't there yet; the show then fires on a later tick once it's live.
+			if (!hasPendingInput(s) && !s.show) continue
 			rt[label] = { starting: true, startedAt: Date.now(), sentAt: 0, cmdSentAt: 0, prevPromptCount: s.prompts.filter((p) => !p.isCmd && !p.isBarrier).length }
 			actions.push(() => doSpawn(label, dir))
 			continue
+		}
+		// The session is live: honour a `show` request now (even mid-boot — the tmux
+		// session exists) and consume it by deleting the line.
+		if (s.show) {
+			actions.push(() => showSession(label))
+			s.showFired = true
 		}
 		if (rt[label]?.starting) {
 			if (Date.now() - rt[label].startedAt < READY_MS) continue
