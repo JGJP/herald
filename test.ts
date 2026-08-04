@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-import { applyOps, buildOps, parse, planQueue } from './cmder'
+import { applyOps, buildOps, hasPendingInput, parse, planQueue } from './cmder'
 
 let failures = 0
 const check = (name: string, cond: boolean, detail?: string) => {
@@ -222,6 +222,15 @@ const clearTest = (() => {
 	return planQueue(sessions[0], rt, { now: 100, state: null, cmdDoneMtime: null })
 })()
 check('removing all prompts triggers /clear', JSON.stringify(clearTest) === JSON.stringify([{ type: 'clear' }]), JSON.stringify(clearTest))
+
+// 5e. Spawn gate: only spawn a session once there's something to input. A bare
+// header (or a fully drained one) has nothing pending, so it stays unspawned.
+check('bare header has no pending input', !hasPendingInput(parse('alpha\n').sessions[0]))
+check('header with a fresh prompt has pending input', hasPendingInput(parse('alpha\n\t: do a\n').sessions[0]))
+check('header with a fresh command has pending input', hasPendingInput(parse('alpha\n\t!git status\n').sessions[0]))
+check('all-done session has no pending input', !hasPendingInput(parse('alpha\n\t: do a\n\t\t[DONE]\n').sessions[0]))
+check('an executing session still counts as pending (resume after restart)', hasPendingInput(parse('alpha\n\t: do a\n\t\t[EXECUTING]\n').sessions[0]))
+check('a fully drained queue (frontier at top, nulls below) has no pending input', !hasPendingInput(parse('alpha\n\t: newest\n\t\t[DONE]\n\t: old\n').sessions[0]))
 
 // 6. Path-form headers: label = basename, bare names still map by name.
 const pathFile = '~/_dev/_startale/superapp\n\tprompt: hi\n/abs/path/foo\nbarename\n'

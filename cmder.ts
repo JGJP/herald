@@ -387,6 +387,20 @@ const nearestAbove = (s: Session, idx: number): Prompt | null => {
 	return cands.length ? cands.reduce((a, b) => (b.lineIdx > a.lineIdx ? b : a)) : null
 }
 
+// The bottom-to-top frontier: the top-most already-run item, or the file bottom on
+// a fresh queue. Shared by planQueue's fresh-dispatch branch and the spawn gate.
+const frontierIdx = (s: Session): number => {
+	const done = s.prompts.filter((p) => p.desiredKind === 'DONE')
+	return done.length ? Math.min(...done.map((p) => p.lineIdx)) : Number.POSITIVE_INFINITY
+}
+
+// Whether a session has a pending item the next tick would dispatch. A bare header
+// (no prompts/commands) or a fully drained one has nothing to input, so we don't
+// spawn a tmux session for it — we only spawn once there's work to feed it.
+export const hasPendingInput = (s: Session): boolean =>
+	s.prompts.some((p) => p.desiredKind === 'EXECUTING' || p.desiredKind === 'ATTENTION') ||
+	nearestAbove(s, frontierIdx(s)) !== null
+
 // Only the frontier item keeps a marker: strip every other [EXECUTING]/[DONE].
 const keepOnly = (s: Session, keep: Prompt | null) => {
 	for (const p of s.prompts) {
@@ -440,9 +454,7 @@ export function planQueue(s: Session, rt: RtEntry, io: PlanIO): Dispatch[] {
 	} else {
 		// Nothing running: dispatch the next pending item above the frontier (the
 		// top-most already-run item), or the bottom-most item on a fresh queue.
-		const done = s.prompts.filter((p) => p.desiredKind === 'DONE')
-		const frontierIdx = done.length ? Math.min(...done.map((p) => p.lineIdx)) : Number.POSITIVE_INFINITY
-		const next = nearestAbove(s, frontierIdx)
+		const next = nearestAbove(s, frontierIdx(s))
 		if (next) dispatch(next)
 	}
 
@@ -467,6 +479,9 @@ async function tick(rt: Rt) {
 			continue
 		}
 		if (!live.has(label)) {
+			// Only spawn once there's something to feed the session; a bare header
+			// (or a fully drained one) gets no tmux session until work appears.
+			if (!hasPendingInput(s)) continue
 			rt[label] = { starting: true, startedAt: Date.now(), sentAt: 0, cmdSentAt: 0, prevPromptCount: s.prompts.filter((p) => !p.isCmd).length }
 			actions.push(() => doSpawn(label, dir))
 			continue
