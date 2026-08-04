@@ -68,29 +68,11 @@ const clearAttention = (s: Session) => {
 
 export function parse(content: string): { lines: string[]; sessions: Session[] } {
 	const lines = content.split('\n')
-	// Up to three blank-line-delimited regions: backlog / sessions / footer.
-	// A "separator" is a blank line with real content still below it (so a
-	// trailing newline never counts). The sessions region is the middle one:
-	// it starts after the 1st separator (or at line 0 if there is no backlog)
-	// and ends at the 2nd separator (everything after which is the ignored,
-	// preserved footer). With no separators at all, the whole file is sessions.
-	const isSep = (i: number) => lines[i] === '' && lines.slice(i + 1).some((l) => l.trim() !== '')
-	let firstSep = -1
-	let secondSep = -1
-	for (let i = 0; i < lines.length; i++) {
-		if (!isSep(i)) continue
-		if (firstSep === -1) firstSep = i
-		else {
-			secondSep = i
-			break
-		}
-	}
-	const start = firstSep === -1 ? 0 : firstSep + 1
-	const end = secondSep === -1 ? lines.length : secondSep
-
+	// The whole file is the sessions region; keep your backlog/footer in other
+	// files. Blank lines are skipped, so nothing else is preserved verbatim.
 	const sessions: Session[] = []
 	let cur: Session | null = null
-	for (let i = start; i < end; i++) {
+	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i]
 		if (line.trim() === '') continue
 		const tabs = line.match(/^\t*/)?.[0] ?? ''

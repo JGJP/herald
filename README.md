@@ -29,12 +29,11 @@ pnpm start --dry-run # log intended tmux actions / rewrites without doing them
 
 ## The `cmder` file
 
-The file has up to three blank-line-delimited regions:
+The whole file is the managed sessions region — keep your backlog and other
+notes in separate files so the supervisor's rewrites never touch them.
 
 ```
-backlog / notes (ignored)          <- everything above the 1st blank line
-
-superapp                           <- the sessions region (managed)
+superapp
 	brief description (freeform, ignored)
 		prompt: newest task, runs last
 		prompt: please add feature X, commit, push PR
@@ -43,22 +42,13 @@ superapp                           <- the sessions region (managed)
 			[DONE]
 superapp-2
 	[NEEDS ATTENTION]
-
-footer / notes (ignored, preserved) <- everything below the 2nd blank line
 ```
 
-- **Backlog** (above the 1st blank line) and **footer** (below the 2nd blank
-  line) are ignored and preserved verbatim — your scratchpads.
-- The **sessions** region is the middle block. So a footer requires a backlog
-  section above it (there must be a blank line before the sessions). Keep the
-  sessions contiguous — don't put blank lines between them, or the rest is read
-  as footer.
-
 - A line at column 0 is a **session**. It is either:
-  - a **bare name** → dir `~/_dev/<name>`, tmux session `cmder-<name>`; or
+  - a **bare name** → dir `~/_dev/<name>`, tmux session `__<name>`; or
   - a **path** (`/abs`, `~/…`, or anything containing `/`) → that dir, with the
     label/tmux name taken from its basename (e.g. `~/_dev/_startale/superapp` →
-    `cmder-superapp`). Use this to point sessions anywhere on disk.
+    `__superapp`). Use this to point sessions anywhere on disk.
 - `prompt: …` lines under a session are a **queue**. They drain **bottom-to-top**
   (oldest at the bottom; append new tasks at the top).
 - Markers are written by the supervisor: `[DONE]`, `[EXECUTING]` per prompt;
