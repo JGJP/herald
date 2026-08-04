@@ -447,6 +447,7 @@ const keepOnly = (s: Session, keep: Prompt | null) => {
 export function planQueue(s: Session, rt: RtEntry, io: PlanIO): Dispatch[] {
 	const out: Dispatch[] = []
 	const promptCount = s.prompts.filter((p) => !p.isCmd && !p.isBarrier).length
+	const hasBarrier = s.prompts.some((p) => p.isBarrier)
 
 	const dispatch = (item: Prompt) => {
 		item.desiredKind = 'EXECUTING'
@@ -481,7 +482,7 @@ export function planQueue(s: Session, rt: RtEntry, io: PlanIO): Dispatch[] {
 			// Claude is blocked waiting for input mid-task: flag this prompt.
 			active.desiredKind = 'ATTENTION'
 		}
-	} else if (rt.prevPromptCount >= 1 && promptCount === 0) {
+	} else if (rt.prevPromptCount >= 1 && promptCount === 0 && !hasBarrier) {
 		// Every prompt was deleted: reset the claude conversation.
 		out.push({ type: 'clear' })
 	} else {
@@ -491,7 +492,9 @@ export function planQueue(s: Session, rt: RtEntry, io: PlanIO): Dispatch[] {
 		if (next && !next.isBarrier) dispatch(next) // a `#` barrier here halts the queue
 	}
 
-	rt.prevPromptCount = promptCount
+	// A `#` barrier holds the whole queue, including a pending /clear: keep the
+	// prompt count frozen so the clear still fires once the barrier is removed.
+	if (!(hasBarrier && promptCount === 0)) rt.prevPromptCount = promptCount
 	return out
 }
 

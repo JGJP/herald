@@ -251,6 +251,17 @@ check('a bottom `#` barrier blocks the entire queue', JSON.stringify(bottomBarri
 check('barrier-only next item is not pending input (no spawn)', !hasPendingInput(parse('alpha\n\t: a\n\t# manual first\n').sessions[0]))
 check('a runnable item below a barrier is pending input (spawn)', hasPendingInput(parse('alpha\n\t# manual\n\t: run me\n').sessions[0]))
 
+// A pending /clear (all prompts deleted) is suppressed while a `#` barrier remains,
+// then fires once the barrier is removed (the prompt count stays frozen meanwhile).
+const clearBarrier = (() => {
+	const rt = { starting: false, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: 2 }
+	const held = planQueue(parse('alpha\n\t# manual step\n').sessions[0], rt, { now: 100, state: null, cmdDoneMtime: null })
+	const released = planQueue(parse('alpha\n').sessions[0], rt, { now: 200, state: null, cmdDoneMtime: null })
+	return { held, released }
+})()
+check('a `#` barrier suppresses the /clear', JSON.stringify(clearBarrier.held) === JSON.stringify([]), JSON.stringify(clearBarrier.held))
+check('the /clear fires once the `#` barrier is removed', JSON.stringify(clearBarrier.released) === JSON.stringify([{ type: 'clear' }]), JSON.stringify(clearBarrier.released))
+
 // 5e. Spawn gate: only spawn a session once there's something to input. A bare
 // header (or a fully drained one) has nothing pending, so it stays unspawned.
 check('bare header has no pending input', !hasPendingInput(parse('alpha\n').sessions[0]))
