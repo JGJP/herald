@@ -223,6 +223,34 @@ const clearTest = (() => {
 })()
 check('removing all prompts triggers /clear', JSON.stringify(clearTest) === JSON.stringify([{ type: 'clear' }]), JSON.stringify(clearTest))
 
+// 5d-bis. `#` barrier: a human-action line halts the drain until it's removed.
+const barrierParse = parse('alpha\n\t: newest\n\t# do a manual step\n\t: old\n')
+check(
+	'`#` line parses as a barrier (not a prompt/command)',
+	barrierParse.sessions[0].prompts.length === 3 &&
+		barrierParse.sessions[0].prompts[1].isBarrier === true &&
+		barrierParse.sessions[0].prompts[1].text === 'do a manual step',
+	JSON.stringify(barrierParse.sessions[0].prompts.map((p) => [p.isBarrier, p.text])),
+)
+check('`#` barrier round-trips verbatim', applyOps(barrierParse.lines, buildOps(barrierParse.sessions)).join('\n') === 'alpha\n\t: newest\n\t# do a manual step\n\t: old\n')
+
+// The queue drains up to the barrier, then stops: `old` runs, `newest` does not.
+const blocked = drain('alpha\n\t: newest\n\t# do a manual step\n\t: old\n')
+check('drain stops at the `#` barrier (only items below it run)', JSON.stringify(blocked.order) === JSON.stringify(['prompt:old']), JSON.stringify(blocked.order))
+check('barrier leaves the frontier [DONE] below it, never marks the `#` line', blocked.content.includes(': old\n\t\t[DONE]') && blocked.content.includes('# do a manual step') && (blocked.content.match(/\[(EXECUTING|DONE|NEEDS ATTENTION)\]/g) ?? []).length === 1, JSON.stringify(blocked.content))
+
+// Removing the barrier lets the queue continue past it on the next drain.
+const unblocked = drain(blocked.content.replace('\t# do a manual step\n', ''))
+check('removing the `#` barrier releases the rest of the queue', JSON.stringify(unblocked.order) === JSON.stringify(['prompt:newest']), JSON.stringify(unblocked.order))
+
+// A barrier at the very bottom blocks the whole queue (nothing runs).
+const bottomBarrier = drain('alpha\n\t: a\n\t# manual first\n')
+check('a bottom `#` barrier blocks the entire queue', JSON.stringify(bottomBarrier.order) === JSON.stringify([]), JSON.stringify(bottomBarrier.order))
+
+// The spawn gate treats a barrier-blocked session as having nothing to input.
+check('barrier-only next item is not pending input (no spawn)', !hasPendingInput(parse('alpha\n\t: a\n\t# manual first\n').sessions[0]))
+check('a runnable item below a barrier is pending input (spawn)', hasPendingInput(parse('alpha\n\t# manual\n\t: run me\n').sessions[0]))
+
 // 5e. Spawn gate: only spawn a session once there's something to input. A bare
 // header (or a fully drained one) has nothing pending, so it stays unspawned.
 check('bare header has no pending input', !hasPendingInput(parse('alpha\n').sessions[0]))

@@ -67,6 +67,11 @@ superapp-2
   that never exits (e.g. a server) stays `[EXECUTING]` and blocks the rest of the
   queue — by design. So e.g. `!git push` placed above `: make the change` runs only
   after that prompt is done.
+- `#…` lines are **human-action barriers**: a step you must do yourself. When the
+  drain reaches one it **stops there** — nothing above it runs, and the `#` line
+  never gets a marker — until **you delete the line**. Put one above work that must
+  wait on a manual step (e.g. `# rotate the staging secret`). A `#` at the very
+  bottom blocks the whole session until removed.
 - Only the **current** item keeps a marker — it is the *frontier*: items above it
   (nearer the top) are still pending, items below it have already run. When the
   next item is marked `[EXECUTING]`, the previous marker is stripped, so at most
@@ -80,6 +85,7 @@ superapp-2
 | Add a session (bare name or path; the dir must exist) | Spawns `tmux` session `__<label>` running `claude` in that dir |
 | Add a `prompt:` line | Queues it; sends it to the claude pane when it reaches the front (the item below is done); marks `[EXECUTING]` → `[DONE]` |
 | Add a `!command` line | Queues it; runs it once in the shell window when it reaches the front; marks `[EXECUTING]` → `[DONE]` when it exits |
+| Add a `#` line | Halts the queue at that point until you delete the line (a human-action barrier) |
 | Delete all prompts under a session | Sends `/clear` (session stays alive, idle) |
 | Delete the session name | Kills the tmux session |
 | Answer a `[NEEDS ATTENTION]` prompt | Type directly into the tmux; the marker returns to `[DONE]` when Claude finishes |

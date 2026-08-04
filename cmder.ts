@@ -58,6 +58,9 @@ interface Prompt {
 	// A `!command` line: runs once in the session's shell window, then is marked
 	// [DONE] like a finished prompt. It never enters the claude prompt queue.
 	isCmd: boolean
+	// A `#` line: a human action. It never runs or gets a marker; when the drain
+	// reaches it the queue halts there until the line is removed.
+	isBarrier: boolean
 }
 interface Session {
 	label: string
@@ -73,6 +76,8 @@ interface Session {
 const PROMPT_RE = /^(?:prompt:|:)\s*/i
 // A command line starts with `!`; the command runs in the shell window.
 const CMD_RE = /^!\s*/
+// A barrier line starts with `#`; it marks a human action that halts the queue.
+const BARRIER_RE = /^#\s*/
 const isAttention = (x: string | null): boolean => !!x && /NEEDS ATTENTION/i.test(x)
 const clearAttention = (s: Session) => {
 	if (isAttention(s.desiredSession)) s.desiredSession = null
@@ -113,6 +118,7 @@ export function parse(content: string): { lines: string[]; sessions: Session[] }
 				marker: null,
 				desiredKind: null,
 				isCmd: false,
+				isBarrier: false,
 			})
 		} else if (CMD_RE.test(t)) {
 			cur.prompts.push({
@@ -122,6 +128,17 @@ export function parse(content: string): { lines: string[]; sessions: Session[] }
 				marker: null,
 				desiredKind: null,
 				isCmd: true,
+				isBarrier: false,
+			})
+		} else if (BARRIER_RE.test(t)) {
+			cur.prompts.push({
+				text: t.replace(BARRIER_RE, ''),
+				lineIdx: i,
+				indent: tabs,
+				marker: null,
+				desiredKind: null,
+				isCmd: false,
+				isBarrier: true,
 			})
 		} else if (/^\[.*\]$/.test(t)) {
 			const kind: Kind | null = /executing/i.test(t)
@@ -133,7 +150,7 @@ export function parse(content: string): { lines: string[]; sessions: Session[] }
 						: null
 			// A status marker attaches to the nearest preceding prompt without a
 			// marker; anything unrecognised (e.g. [NO DIR …]) is a session marker.
-			const target = kind ? [...cur.prompts].reverse().find((p) => !p.marker) : undefined
+			const target = kind ? [...cur.prompts].reverse().find((p) => !p.marker && !p.isBarrier) : undefined
 			if (kind && target) {
 				target.marker = { kind, lineIdx: i }
 				target.desiredKind = kind
@@ -395,11 +412,14 @@ const frontierIdx = (s: Session): number => {
 }
 
 // Whether a session has a pending item the next tick would dispatch. A bare header
-// (no prompts/commands) or a fully drained one has nothing to input, so we don't
-// spawn a tmux session for it — we only spawn once there's work to feed it.
-export const hasPendingInput = (s: Session): boolean =>
-	s.prompts.some((p) => p.desiredKind === 'EXECUTING' || p.desiredKind === 'ATTENTION') ||
-	nearestAbove(s, frontierIdx(s)) !== null
+// (no prompts/commands), a fully drained one, or one blocked on a `#` human-action
+// barrier has nothing to input, so we don't spawn a tmux session for it — we only
+// spawn once there's work to feed it.
+export const hasPendingInput = (s: Session): boolean => {
+	if (s.prompts.some((p) => p.desiredKind === 'EXECUTING' || p.desiredKind === 'ATTENTION')) return true
+	const next = nearestAbove(s, frontierIdx(s))
+	return next !== null && !next.isBarrier
+}
 
 // Only the frontier item keeps a marker: strip every other [EXECUTING]/[DONE].
 const keepOnly = (s: Session, keep: Prompt | null) => {
@@ -414,7 +434,7 @@ const keepOnly = (s: Session, keep: Prompt | null) => {
 // w.r.t. I/O so it can be unit-tested by feeding synthetic events.
 export function planQueue(s: Session, rt: RtEntry, io: PlanIO): Dispatch[] {
 	const out: Dispatch[] = []
-	const promptCount = s.prompts.filter((p) => !p.isCmd).length
+	const promptCount = s.prompts.filter((p) => !p.isCmd && !p.isBarrier).length
 
 	const dispatch = (item: Prompt) => {
 		item.desiredKind = 'EXECUTING'
@@ -428,10 +448,11 @@ export function planQueue(s: Session, rt: RtEntry, io: PlanIO): Dispatch[] {
 		keepOnly(s, item)
 	}
 	// Advance past the item that just finished (now marked DONE) to its predecessor.
+	// A `#` barrier ahead halts the drain: keep the finished item as the frontier.
 	const advance = (from: Prompt) => {
 		const next = nearestAbove(s, from.lineIdx)
-		if (next) dispatch(next)
-		else keepOnly(s, from) // queue drained: keep the final [DONE] on the frontier
+		if (next && !next.isBarrier) dispatch(next)
+		else keepOnly(s, from) // queue drained or barrier ahead: hold the frontier here
 	}
 
 	const active = s.prompts.find((p) => p.desiredKind === 'EXECUTING' || p.desiredKind === 'ATTENTION')
@@ -455,7 +476,7 @@ export function planQueue(s: Session, rt: RtEntry, io: PlanIO): Dispatch[] {
 		// Nothing running: dispatch the next pending item above the frontier (the
 		// top-most already-run item), or the bottom-most item on a fresh queue.
 		const next = nearestAbove(s, frontierIdx(s))
-		if (next) dispatch(next)
+		if (next && !next.isBarrier) dispatch(next) // a `#` barrier here halts the queue
 	}
 
 	rt.prevPromptCount = promptCount
@@ -482,7 +503,7 @@ async function tick(rt: Rt) {
 			// Only spawn once there's something to feed the session; a bare header
 			// (or a fully drained one) gets no tmux session until work appears.
 			if (!hasPendingInput(s)) continue
-			rt[label] = { starting: true, startedAt: Date.now(), sentAt: 0, cmdSentAt: 0, prevPromptCount: s.prompts.filter((p) => !p.isCmd).length }
+			rt[label] = { starting: true, startedAt: Date.now(), sentAt: 0, cmdSentAt: 0, prevPromptCount: s.prompts.filter((p) => !p.isCmd && !p.isBarrier).length }
 			actions.push(() => doSpawn(label, dir))
 			continue
 		}
@@ -494,7 +515,7 @@ async function tick(rt: Rt) {
 		// Attention is a per-prompt marker now; strip any legacy session-level one.
 		clearAttention(s)
 
-		rt[label] ??= { starting: false, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: s.prompts.filter((p) => !p.isCmd).length }
+		rt[label] ??= { starting: false, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: s.prompts.filter((p) => !p.isCmd && !p.isBarrier).length }
 
 		// Capture what an in-flight command's completion would look like *before*
 		// planQueue mutates markers/timers, so we can clear its done-file afterwards.
