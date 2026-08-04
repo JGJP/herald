@@ -370,6 +370,15 @@ const pickPending = (s: Session, cmd = false): Prompt | null => {
 	return pending.length ? pending.reduce((a, b) => (b.lineIdx > a.lineIdx ? b : a)) : null
 }
 
+// Only the current task keeps a marker: when one is (re)marked, strip the
+// [EXECUTING]/[DONE] markers the earlier (already-processed) tasks left behind.
+export const clearOtherTaskMarkers = (s: Session, keep: Prompt) => {
+	for (const p of s.prompts) {
+		if (p === keep || p.isCmd) continue
+		if (p.desiredKind === 'EXECUTING' || p.desiredKind === 'DONE') p.desiredKind = null
+	}
+}
+
 async function tick(rt: Rt) {
 	const live = await listTmux()
 	const mtimeA = safeMtime(CMDER)
@@ -439,6 +448,9 @@ async function tick(rt: Rt) {
 					rt[label].sentAt = Date.now()
 					actions.push(() => sendLine(label, next.text))
 				}
+				// Keep a marker only on the current task (the new EXECUTING one, or the
+				// just-finished DONE when the queue is drained); clear the earlier ones.
+				clearOtherTaskMarkers(s, next ?? exec)
 			} else if (st && st.event === 'Notification' && st.mtimeMs > rt[label].sentAt) {
 				// Claude is blocked waiting for input mid-task: flag this prompt.
 				exec.desiredKind = 'ATTENTION'
@@ -451,6 +463,7 @@ async function tick(rt: Rt) {
 				next.desiredKind = 'EXECUTING'
 				rt[label].sentAt = Date.now()
 				actions.push(() => sendLine(label, next.text))
+				clearOtherTaskMarkers(s, next)
 			}
 		}
 		rt[label].prevPromptCount = promptCount

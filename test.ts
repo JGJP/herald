@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-import { applyOps, buildOps, parse } from './cmder'
+import { applyOps, buildOps, clearOtherTaskMarkers, parse } from './cmder'
 
 let failures = 0
 const check = (name: string, cond: boolean, detail?: string) => {
@@ -144,6 +144,31 @@ check(
 	rn.sessions[0].prompts[0].isCmd && rn.sessions[0].prompts[0].marker?.kind === 'EXECUTING',
 )
 check('`!` executing command round-trips', applyOps(rn.lines, buildOps(rn.sessions)).join('\n') === running)
+
+// 5d. Marking a new task strips the earlier tasks' [EXECUTING]/[DONE] markers.
+const acc = 'alpha\n\t: newest\n\t: mid\n\t\t[EXECUTING]\n\t: old\n\t\t[DONE]\n'
+const ac = parse(acc)
+const asess = ac.sessions[0]
+const newest = asess.prompts.find((p) => p.text === 'newest')!
+newest.desiredKind = 'EXECUTING'
+clearOtherTaskMarkers(asess, newest)
+const collapsed = applyOps(ac.lines, buildOps(ac.sessions)).join('\n')
+check(
+	'marking a new task removes earlier task markers',
+	(collapsed.match(/\[EXECUTING\]/g) ?? []).length === 1 &&
+		!collapsed.includes('[DONE]') &&
+		collapsed.includes(': newest\n\t\t[EXECUTING]'),
+	JSON.stringify(collapsed),
+)
+// ATTENTION on another task and command markers are left untouched.
+const keepIt = parse('alpha\n\t: a\n\t\t[NEEDS ATTENTION]\n\t: b\n\t!cmd\n\t\t[DONE]\n')
+const ks = keepIt.sessions[0]
+clearOtherTaskMarkers(ks, ks.prompts.find((p) => p.text === 'b')!)
+check(
+	'clearing task markers leaves attention and command markers alone',
+	ks.prompts.find((p) => p.text === 'a')!.desiredKind === 'ATTENTION' &&
+		ks.prompts.find((p) => p.isCmd)!.desiredKind === 'DONE',
+)
 
 // 6. Path-form headers: label = basename, bare names still map by name.
 const pathFile = '~/_dev/_startale/superapp\n\tprompt: hi\n/abs/path/foo\nbarename\n'

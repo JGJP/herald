@@ -62,7 +62,10 @@ superapp-2
   server) stays `[EXECUTING]` and blocks later commands — by design.
 - Markers are written by the supervisor per prompt: `[EXECUTING]` → `[DONE]`, or
   `[NEEDS ATTENTION]` (replaces the prompt's marker when Claude blocks waiting for
-  input mid-task). A completed prompt that then sits idle stays `[DONE]`.
+  input mid-task). Only the **current** task keeps a marker — when a new task is
+  marked `[EXECUTING]`/`[DONE]`, the earlier tasks' `[EXECUTING]`/`[DONE]` lines are
+  stripped, so at most one prompt marker is shown (the active one, or the final
+  `[DONE]` once the queue drains).
 
 ## What edits do
 
