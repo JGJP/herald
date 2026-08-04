@@ -46,11 +46,13 @@ superapp-2
 			[NEEDS ATTENTION]
 ```
 
-- A line at column 0 is a **session**. It is either:
-  - a **bare name** → dir `~/_dev/<name>`, tmux session `__<name>`; or
+- A line at column 0 is a **session**. It is, in order of precedence:
+  - an **alias** listed in `cmder-aliases.yaml` → its mapped path, tmux session
+    `__<alias>`; or
   - a **path** (`/abs`, `~/…`, or anything containing `/`) → that dir, with the
     label/tmux name taken from its basename (e.g. `~/_dev/_startale/superapp` →
-    `__superapp`). Use this to point sessions anywhere on disk.
+    `__superapp`). Use this to point sessions anywhere on disk; or
+  - a **bare name** → dir `~/_dev/<name>`, tmux session `__<name>`.
 - `prompt: …` lines (`: …` is shorthand) and `!command` lines under a session form
   **one queue** that drains **bottom-to-top**, **one item at a time in file order**
   (oldest at the bottom; append new work at the top). An item runs only once the
@@ -109,9 +111,24 @@ tmux prefix + `n`/`p`).
 - The loop is the sole writer of markers; it computes changes, writes the file,
   then runs tmux actions, and defers if you edit `cmder-control` mid-tick.
 
+## Repo aliases (`cmder-aliases.yaml`)
+
+Optional. A YAML map of `label: path`, so a header in `cmder-control` can be a
+short label instead of a full path. `~` expands to your home dir; the label
+becomes the tmux session name. See `cmder-aliases.example.yaml`.
+
+```yaml
+superapp: ~/_dev/_startale/superapp
+infra: ~/work/infra-monorepo
+```
+
+The file is re-read every tick, so alias edits take effect without a restart. A
+header that isn't a listed alias falls back to the path / bare-name rules above.
+
 ## Env overrides (mainly for testing)
 
 - `CMDER_FILE` — watch a different control file instead of `./cmder-control`.
+- `CMDER_ALIASES` — read aliases from a different file instead of `./cmder-aliases.yaml`.
 - `CMDER_READY_MS` — boot grace before the first prompt is sent (default 6000).
 
 ## Test

@@ -12,10 +12,13 @@ import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { fire } from '@jgjp/fire'
-import { $, sleep } from 'zx'
+import { $, sleep, YAML } from 'zx'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const CMDER = process.env.CMDER_FILE ? resolve(process.env.CMDER_FILE) : join(HERE, 'cmder-control')
+// Optional YAML file of `label: /path/to/repo` aliases, so a header in
+// cmder-control can be a short label instead of a full path.
+const ALIASES_FILE = process.env.CMDER_ALIASES ? resolve(process.env.CMDER_ALIASES) : join(HERE, 'cmder-aliases.yaml')
 const STATE = join(HERE, 'state')
 const RT_PATH = join(STATE, 'controller.json')
 const DEV_DIR = join(homedir(), '_dev')
@@ -31,14 +34,32 @@ const log = (m: string) => console.log(`${new Date().toISOString()} ${m}`)
 const expandHome = (p: string): string =>
 	p.startsWith('~') ? join(homedir(), p.slice(p[1] === '/' ? 2 : 1)) : p
 
-// A session header is either a bare name (dir = ~/_dev/<name>, label = name) or
-// a path anywhere (dir = the path, label = its basename / tmux session name).
-function resolveTarget(header: string): { label: string; dir: string } {
+export type Aliases = Record<string, string>
+
+// Resolve a session header to a tmux label and working dir. Precedence:
+//   1. an exact alias key → label = the alias, dir = its mapped path;
+//   2. a path (bare `/`, `~/…`, or anything with `/`) → that dir, label = basename;
+//   3. a bare name → dir `~/_dev/<name>`, label = name.
+function resolveTarget(header: string, aliases: Aliases = {}): { label: string; dir: string } {
+	if (aliases[header]) return { label: header, dir: resolve(expandHome(aliases[header])) }
 	if (header.startsWith('/') || header.startsWith('~') || header.includes('/')) {
 		const dir = resolve(expandHome(header))
 		return { label: basename(dir), dir }
 	}
 	return { label: header, dir: join(DEV_DIR, header) }
+}
+
+// Load the label→path alias map, tolerating a missing/empty/malformed file.
+function loadAliases(): Aliases {
+	try {
+		const parsed = YAML.parse(readFileSync(ALIASES_FILE, 'utf8'))
+		if (!parsed || typeof parsed !== 'object') return {}
+		const out: Aliases = {}
+		for (const [k, v] of Object.entries(parsed)) if (typeof v === 'string') out[k] = v
+		return out
+	} catch {
+		return {}
+	}
 }
 
 // ---------------------------------------------------------------- parse model
@@ -83,7 +104,7 @@ const clearAttention = (s: Session) => {
 	if (isAttention(s.desiredSession)) s.desiredSession = null
 }
 
-export function parse(content: string): { lines: string[]; sessions: Session[] } {
+export function parse(content: string, aliases: Aliases = {}): { lines: string[]; sessions: Session[] } {
 	const lines = content.split('\n')
 	// The whole file is the sessions region; keep your backlog/footer in other
 	// files. Blank lines are skipped, so nothing else is preserved verbatim.
@@ -94,7 +115,7 @@ export function parse(content: string): { lines: string[]; sessions: Session[] }
 		if (line.trim() === '') continue
 		const tabs = line.match(/^\t*/)?.[0] ?? ''
 		if (tabs.length === 0) {
-			const { label, dir } = resolveTarget(line.trim())
+			const { label, dir } = resolveTarget(line.trim(), aliases)
 			cur = {
 				label,
 				dir,
@@ -502,7 +523,7 @@ async function tick(rt: Rt) {
 	const live = await listTmux()
 	const mtimeA = safeMtime(CMDER)
 	const content = readFileSync(CMDER, 'utf8')
-	const { lines, sessions } = parse(content)
+	const { lines, sessions } = parse(content, loadAliases())
 	const modelLabels = new Set(sessions.map((s) => s.label))
 	const actions: (() => Promise<void>)[] = []
 

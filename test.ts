@@ -282,6 +282,13 @@ check(
 check('absolute path header', pf.sessions[1].label === 'foo' && pf.sessions[1].dir === '/abs/path/foo')
 check('bare name still maps to ~/_dev/<name>', pf.sessions[2].label === 'barename' && pf.sessions[2].dir.endsWith('/_dev/barename'))
 
+// 6b. An aliased header resolves to the mapped path (label = the alias); a bare
+// name that isn't an alias still falls back to ~/_dev/<name>.
+const aliased = parse('app\n\tprompt: hi\nbarename\n', { app: '/opt/repos/superapp', other: '~/x' })
+check('alias header -> mapped path, label = alias', aliased.sessions[0].label === 'app' && aliased.sessions[0].dir === '/opt/repos/superapp', `${aliased.sessions[0].label} / ${aliased.sessions[0].dir}`)
+check('alias `~` expands to home', parse('other\n', { other: '~/x' }).sessions[0].dir.endsWith('/x') && !parse('other\n', { other: '~/x' }).sessions[0].dir.startsWith('~'))
+check('non-aliased bare name still maps to ~/_dev/<name>', aliased.sessions[1].dir.endsWith('/_dev/barename'))
+
 // 7. Blank lines between sessions are skipped but preserved on round-trip.
 const withBlanks = 'superapp\n\tprompt: do a thing\n\nsuperapp-2\n\tprompt: do another\n'
 const wb = parse(withBlanks)

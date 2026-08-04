@@ -2,3 +2,4 @@ node_modules
 state
 cmder-control
 cmder-actions
+cmder-aliases.yaml
