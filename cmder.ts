@@ -447,18 +447,21 @@ async function doKill(label: string) {
 	await $({ nothrow: true, quiet: true })`tmux kill-session -t ${T(label)}`
 }
 
-// Bring this session on screen by switching every attached client (e.g. your
-// WezTerm terminal) to it. Run outside tmux there is no "current" client, so we
-// enumerate the clients and switch each — for a single-client setup that's exactly
-// the terminal you have open.
+// Bring this session on screen by switching the first client that's currently
+// viewing a controller-managed (`__*`) session — i.e. the terminal you use to watch
+// cmder sessions (e.g. WezTerm). Clients parked on your own non-`__` sessions are
+// left alone. Run outside tmux there is no "current" client, so we target it by name.
 async function showSession(label: string) {
 	log(`showing ${T(label)}`)
 	if (DRY) return
 	const tm = $({ nothrow: true, quiet: true })
-	const r = await tm`tmux list-clients -F ${'#{client_name}'}`
+	const r = await tm`tmux list-clients -F ${'#{client_name}\t#{client_session}'}`
 	for (const line of r.stdout.split('\n')) {
-		const client = line.trim()
-		if (client) await tm`tmux switch-client -c ${client} -t ${T(label)}`
+		const [client, session] = line.split('\t')
+		if (client && session?.startsWith(PREFIX)) {
+			await tm`tmux switch-client -c ${client} -t ${T(label)}`
+			return
+		}
 	}
 }
 
