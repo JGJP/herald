@@ -117,6 +117,34 @@ check(
 )
 check('`:` shorthand round-trips', applyOps(sh.lines, buildOps(sh.sessions)).join('\n') === shorthand)
 
+// 5c. `!` command lines parse as one-shot commands (isCmd) separate from prompts.
+const cmds = 'alpha\n\tprompt: do a\n\t!git status\n\t!pnpm test\n'
+const cm = parse(cmds)
+check(
+	'`!` lines parse as commands, not prompts',
+	cm.sessions[0].prompts.filter((p) => !p.isCmd).length === 1 &&
+		cm.sessions[0].prompts.filter((p) => p.isCmd).map((p) => p.text).join(',') === 'git status,pnpm test',
+	JSON.stringify(cm.sessions[0].prompts.map((p) => [p.isCmd, p.text])),
+)
+check('`!` command lines round-trip', applyOps(cm.lines, buildOps(cm.sessions)).join('\n') === cmds)
+// A ran command carries a [DONE] marker attached to its own line.
+const ran = parse('alpha\n\t!git status\n\t\t[DONE]\n')
+check(
+	'`!` command [DONE] marker attaches to the command',
+	ran.sessions[0].prompts.length === 1 &&
+		ran.sessions[0].prompts[0].isCmd &&
+		ran.sessions[0].prompts[0].marker?.kind === 'DONE',
+)
+// An in-flight command carries an [EXECUTING] marker while it runs (gated on its
+// done-file before advancing to [DONE]); it round-trips verbatim.
+const running = 'alpha\n\t!sleep 5\n\t\t[EXECUTING]\n'
+const rn = parse(running)
+check(
+	'`!` command [EXECUTING] marker attaches to the command',
+	rn.sessions[0].prompts[0].isCmd && rn.sessions[0].prompts[0].marker?.kind === 'EXECUTING',
+)
+check('`!` executing command round-trips', applyOps(rn.lines, buildOps(rn.sessions)).join('\n') === running)
+
 // 6. Path-form headers: label = basename, bare names still map by name.
 const pathFile = '~/_dev/_startale/superapp\n\tprompt: hi\n/abs/path/foo\nbarename\n'
 const pf = parse(pathFile)

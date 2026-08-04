@@ -53,6 +53,13 @@ superapp-2
     `__superapp`). Use this to point sessions anywhere on disk.
 - `prompt: …` lines under a session are a **queue** (`: …` is shorthand). They
   drain **bottom-to-top** (oldest at the bottom; append new tasks at the top).
+- `!command` lines under a session run **once** in the session's **shell window**
+  (the 2nd window, not the claude pane). They run **one at a time**: a command is
+  marked `[EXECUTING]` when dispatched and only advances to `[DONE]` once it has
+  actually **exited** (the controller appends `; echo $status > state/<label>.cmd`
+  and waits for that done-file), then the next queued command fires. Delete the
+  `[DONE]` line to run the command again. A command that never exits (e.g. a
+  server) stays `[EXECUTING]` and blocks later commands — by design.
 - Markers are written by the supervisor per prompt: `[EXECUTING]` → `[DONE]`, or
   `[NEEDS ATTENTION]` (replaces the prompt's marker when Claude blocks waiting for
   input mid-task). A completed prompt that then sits idle stays `[DONE]`.
@@ -63,6 +70,7 @@ superapp-2
 | --- | --- |
 | Add a session (bare name or path; the dir must exist) | Spawns `tmux` session `__<label>` running `claude` in that dir |
 | Add a `prompt:` line | Sends it (once the running one finishes); marks `[EXECUTING]` → `[DONE]` |
+| Add a `!command` line | Runs it once in the shell window; marks `[EXECUTING]` → `[DONE]` when it exits |
 | Delete all prompts under a session | Sends `/clear` (session stays alive, idle) |
 | Delete the session name | Kills the tmux session |
 | Answer a `[NEEDS ATTENTION]` prompt | Type directly into the tmux; the marker returns to `[DONE]` when Claude finishes |

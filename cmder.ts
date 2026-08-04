@@ -55,6 +55,9 @@ interface Prompt {
 	indent: string
 	marker: { kind: Kind; lineIdx: number } | null
 	desiredKind: Kind | null
+	// A `!command` line: runs once in the session's shell window, then is marked
+	// [DONE] like a finished prompt. It never enters the claude prompt queue.
+	isCmd: boolean
 }
 interface Session {
 	label: string
@@ -68,6 +71,8 @@ interface Session {
 
 // A prompt line starts with `prompt:` or the shorthand `:`.
 const PROMPT_RE = /^(?:prompt:|:)\s*/i
+// A command line starts with `!`; the command runs in the shell window.
+const CMD_RE = /^!\s*/
 const isAttention = (x: string | null): boolean => !!x && /NEEDS ATTENTION/i.test(x)
 const clearAttention = (s: Session) => {
 	if (isAttention(s.desiredSession)) s.desiredSession = null
@@ -107,6 +112,16 @@ export function parse(content: string): { lines: string[]; sessions: Session[] }
 				indent: tabs,
 				marker: null,
 				desiredKind: null,
+				isCmd: false,
+			})
+		} else if (CMD_RE.test(t)) {
+			cur.prompts.push({
+				text: t.replace(CMD_RE, ''),
+				lineIdx: i,
+				indent: tabs,
+				marker: null,
+				desiredKind: null,
+				isCmd: true,
 			})
 		} else if (/^\[.*\]$/.test(t)) {
 			const kind: Kind | null = /executing/i.test(t)
@@ -177,6 +192,9 @@ interface RtEntry {
 	starting: boolean
 	startedAt: number
 	sentAt: number
+	// When the in-flight shell command was dispatched; its done-file must be
+	// newer than this to count as finished.
+	cmdSentAt: number
 	prevPromptCount: number
 }
 type Rt = Record<string, RtEntry>
@@ -208,6 +226,21 @@ function readState(label: string): StateEvent | null {
 const rmState = (label: string) => {
 	try {
 		unlinkSync(join(STATE, `${label}.json`))
+	} catch {}
+}
+// A finished `!command` writes its exit status to state/<label>.cmd; the
+// controller polls this file's mtime to know the command has actually exited.
+const cmdDonePath = (label: string) => join(STATE, `${label}.cmd`)
+const readCmdDone = (label: string): number | null => {
+	try {
+		return statSync(cmdDonePath(label)).mtimeMs
+	} catch {
+		return null
+	}
+}
+const rmCmdDone = (label: string) => {
+	try {
+		unlinkSync(cmdDonePath(label))
 	} catch {}
 }
 const safeMtime = (p: string): number => {
@@ -254,15 +287,47 @@ async function claudePane(label: string): Promise<string> {
 	return ids[0] ?? T(label) // fallback: first pane (claude window is created first)
 }
 
+// The shell pane is the one tagged `@cmder shell` (the session's 2nd window).
+async function shellPane(label: string): Promise<string | null> {
+	const r = await $({
+		nothrow: true,
+		quiet: true,
+	})`tmux list-panes -s -t ${T(label)} -F ${'#{pane_id}\t#{@cmder}'}`
+	for (const line of r.stdout.split('\n')) {
+		const [id, role] = line.split('\t')
+		if (role === 'shell') return id
+	}
+	return null
+}
+
+async function typeInto(pane: string, text: string) {
+	await $({ nothrow: true, quiet: true })`tmux send-keys -t ${pane} -l -- ${text}`
+	await sleep(120)
+	await $({ nothrow: true, quiet: true })`tmux send-keys -t ${pane} Enter`
+}
+
 async function sendLine(label: string, text: string) {
 	if (DRY) {
 		log(`[dry] send ${T(label)}: ${JSON.stringify(text)}`)
 		return
 	}
-	const pane = await claudePane(label)
-	await $({ nothrow: true, quiet: true })`tmux send-keys -t ${pane} -l -- ${text}`
-	await sleep(120)
-	await $({ nothrow: true, quiet: true })`tmux send-keys -t ${pane} Enter`
+	await typeInto(await claudePane(label), text)
+}
+
+// Run a `!command` line in the session's shell window. We append a sentinel that
+// writes the command's exit status to its done-file *after* it exits, so the
+// controller can tell when the command has actually finished (not just been sent).
+async function sendCmd(label: string, text: string) {
+	if (DRY) {
+		log(`[dry] cmd ${T(label)}: ${JSON.stringify(text)}`)
+		return
+	}
+	const pane = await shellPane(label)
+	if (!pane) {
+		log(`no shell pane for ${T(label)}, skipping command`)
+		return
+	}
+	await typeInto(pane, `${text}; echo $status > ${q(cmdDonePath(label))}`)
 }
 
 async function doSpawn(label: string, dir: string) {
@@ -298,9 +363,10 @@ const atomicWrite = (content: string) => {
 
 // -------------------------------------------------------------- reconcile tick
 
-// Bottom-most pending prompt runs first (queue drains bottom-to-top).
-const pickNext = (s: Session): Prompt | null => {
-	const pending = s.prompts.filter((p) => p.desiredKind === null)
+// Bottom-most pending item runs first (queue drains bottom-to-top). Prompts and
+// commands are independent queues, selected by the `cmd` flag.
+const pickPending = (s: Session, cmd = false): Prompt | null => {
+	const pending = s.prompts.filter((p) => p.isCmd === cmd && p.desiredKind === null)
 	return pending.length ? pending.reduce((a, b) => (b.lineIdx > a.lineIdx ? b : a)) : null
 }
 
@@ -321,7 +387,7 @@ async function tick(rt: Rt) {
 			continue
 		}
 		if (!live.has(label)) {
-			rt[label] = { starting: true, startedAt: Date.now(), sentAt: 0, prevPromptCount: s.prompts.length }
+			rt[label] = { starting: true, startedAt: Date.now(), sentAt: 0, cmdSentAt: 0, prevPromptCount: s.prompts.filter((p) => !p.isCmd).length }
 			actions.push(() => doSpawn(label, dir))
 			continue
 		}
@@ -332,18 +398,42 @@ async function tick(rt: Rt) {
 		if (s.desiredSession && /NO DIR/i.test(s.desiredSession)) s.desiredSession = null
 		// Attention is a per-prompt marker now; strip any legacy session-level one.
 		clearAttention(s)
-		rt[label] ??= { starting: false, startedAt: 0, sentAt: 0, prevPromptCount: s.prompts.length }
+
+		const promptCount = s.prompts.filter((p) => !p.isCmd).length
+		rt[label] ??= { starting: false, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: promptCount }
+
+		// Shell commands run one at a time in the shell window (2nd window). A
+		// command stays [EXECUTING] until its done-file (written when it exits) is
+		// newer than its dispatch; only then does it become [DONE] and the next
+		// pending command fire. This gates on real completion, not just dispatch.
+		const dispatchCmd = (c: Prompt) => {
+			c.desiredKind = 'EXECUTING'
+			rt[label].cmdSentAt = Date.now()
+			actions.push(() => sendCmd(label, c.text))
+		}
+		const execCmd = s.prompts.find((p) => p.isCmd && p.desiredKind === 'EXECUTING')
+		if (execCmd) {
+			const done = readCmdDone(label)
+			if (done !== null && done > (rt[label].cmdSentAt ?? 0)) {
+				execCmd.desiredKind = 'DONE'
+				rmCmdDone(label)
+				const nextCmd = pickPending(s, true)
+				if (nextCmd) dispatchCmd(nextCmd)
+			}
+		} else {
+			const nextCmd = pickPending(s, true)
+			if (nextCmd) dispatchCmd(nextCmd)
+		}
 
 		const st = readState(label)
-		const promptCount = s.prompts.length
 		const prev = rt[label].prevPromptCount
 		// EXECUTING and ATTENTION are both "the currently active prompt".
-		const exec = s.prompts.find((p) => p.desiredKind === 'EXECUTING' || p.desiredKind === 'ATTENTION')
+		const exec = s.prompts.find((p) => !p.isCmd && (p.desiredKind === 'EXECUTING' || p.desiredKind === 'ATTENTION'))
 
 		if (exec) {
 			if (st && st.event === 'Stop' && st.mtimeMs > rt[label].sentAt) {
 				exec.desiredKind = 'DONE'
-				const next = pickNext(s)
+				const next = pickPending(s)
 				if (next) {
 					next.desiredKind = 'EXECUTING'
 					rt[label].sentAt = Date.now()
@@ -356,7 +446,7 @@ async function tick(rt: Rt) {
 		} else if (prev >= 1 && promptCount === 0) {
 			actions.push(() => sendLine(label, '/clear'))
 		} else {
-			const next = pickNext(s)
+			const next = pickPending(s)
 			if (next) {
 				next.desiredKind = 'EXECUTING'
 				rt[label].sentAt = Date.now()
@@ -370,6 +460,7 @@ async function tick(rt: Rt) {
 		if (modelLabels.has(label) || RESERVED.has(label)) continue
 		actions.push(() => doKill(label))
 		rmState(label)
+		rmCmdDone(label)
 		delete rt[label]
 	}
 
