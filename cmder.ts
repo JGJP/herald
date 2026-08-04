@@ -15,7 +15,7 @@ import { fire } from '@jgjp/fire'
 import { $, sleep } from 'zx'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const CMDER = process.env.CMDER_FILE ? resolve(process.env.CMDER_FILE) : join(HERE, 'cmder')
+const CMDER = process.env.CMDER_FILE ? resolve(process.env.CMDER_FILE) : join(HERE, 'cmder-control')
 const STATE = join(HERE, 'state')
 const RT_PATH = join(STATE, 'controller.json')
 const DEV_DIR = join(homedir(), '_dev')
@@ -288,7 +288,7 @@ async function doKill(label: string) {
 
 const atomicWrite = (content: string) => {
 	if (DRY) {
-		log('[dry] cmder would be rewritten')
+		log('[dry] cmder-control would be rewritten')
 		return
 	}
 	const tmp = `${CMDER}.tmp`
@@ -373,10 +373,10 @@ async function tick(rt: Rt) {
 		delete rt[label]
 	}
 
-	// If the user edited cmder while we computed, defer: skip write AND actions
+	// If the user edited cmder-control while we computed, defer: skip write AND actions
 	// so nothing (e.g. a queued prompt) fires against a stale view.
 	if (safeMtime(CMDER) !== mtimeA) {
-		log('cmder changed mid-tick, deferring')
+		log('cmder-control changed mid-tick, deferring')
 		return
 	}
 	const newContent = applyOps(lines, buildOps(sessions)).join('\n')

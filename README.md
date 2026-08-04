@@ -1,7 +1,7 @@
 # bot-cmder
 
 Run many interactive Claude Code instances in tmux and control/observe them all
-through a single plain-text file, `cmder`.
+through a single plain-text file, `cmder-control`.
 
 The file is both a **dashboard** (Claude activity is written back as status
 markers) and a **control surface** (edits start/stop/clear sessions and queue
@@ -23,11 +23,11 @@ are a no-op for your normal Claude sessions and only fire for cmder-launched one
 ## Run
 
 ```sh
-pnpm start           # watch ./cmder and reconcile every second
+pnpm start           # watch ./cmder-control and reconcile every second
 pnpm start --dry-run # log intended tmux actions / rewrites without doing them
 ```
 
-## The `cmder` file
+## The `cmder-control` file
 
 The whole file is the managed sessions region — keep your backlog and other
 notes in separate files so the supervisor's rewrites never touch them.
@@ -84,11 +84,11 @@ tmux prefix + `n`/`p`).
   the file's mtime as the event time).
 - Missing `~/_dev/<label>` ⇒ the session is annotated `[NO DIR …]` and skipped.
 - The loop is the sole writer of markers; it computes changes, writes the file,
-  then runs tmux actions, and defers if you edit `cmder` mid-tick.
+  then runs tmux actions, and defers if you edit `cmder-control` mid-tick.
 
 ## Env overrides (mainly for testing)
 
-- `CMDER_FILE` — watch a different control file instead of `./cmder`.
+- `CMDER_FILE` — watch a different control file instead of `./cmder-control`.
 - `CMDER_READY_MS` — boot grace before the first prompt is sent (default 6000).
 
 ## Test
