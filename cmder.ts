@@ -76,7 +76,7 @@ interface Prompt {
 	indent: string
 	marker: { kind: Kind; lineIdx: number } | null
 	desiredKind: Kind | null
-	// A `!command` line: runs once in the session's shell window, then is marked
+	// A `$command` line: runs once in the session's shell window, then is marked
 	// [DONE] like a finished prompt. It never enters the claude prompt queue.
 	isCmd: boolean
 	// A `#` line: a human action. It never runs or gets a marker; when the drain
@@ -95,8 +95,8 @@ interface Session {
 
 // A prompt line starts with `prompt:` or the shorthand `:`.
 const PROMPT_RE = /^(?:prompt:|:)\s*/i
-// A command line starts with `!`; the command runs in the shell window.
-const CMD_RE = /^!\s*/
+// A command line starts with `$`; the command runs in the shell window.
+const CMD_RE = /^\$\s*/
 // A barrier line starts with `#`; it marks a human action that halts the queue.
 const BARRIER_RE = /^#\s*/
 const isAttention = (x: string | null): boolean => !!x && /NEEDS ATTENTION/i.test(x)
@@ -266,7 +266,7 @@ const rmState = (label: string) => {
 		unlinkSync(join(STATE, `${label}.json`))
 	} catch {}
 }
-// A finished `!command` writes its exit status to state/<label>.cmd; the
+// A finished `$command` writes its exit status to state/<label>.cmd; the
 // controller polls this file's mtime to know the command has actually exited.
 const cmdDonePath = (label: string) => join(STATE, `${label}.cmd`)
 const readCmdDone = (label: string): number | null => {
@@ -364,7 +364,7 @@ async function sendLine(label: string, text: string, vimInsert = false) {
 	await typeInto(await claudePane(label), text, vimInsert)
 }
 
-// Run a `!command` line in the session's shell window. We append a sentinel that
+// Run a `$command` line in the session's shell window. We append a sentinel that
 // writes the command's exit status to its done-file *after* it exits, so the
 // controller can tell when the command has actually finished (not just been sent).
 async function sendCmd(label: string, text: string) {
@@ -413,7 +413,7 @@ const atomicWrite = (content: string) => {
 
 // -------------------------------------------------------------- reconcile tick
 
-// Prompts and `!command` lines share ONE queue that drains bottom-to-top, one
+// Prompts and `$command` lines share ONE queue that drains bottom-to-top, one
 // item at a time in file order: an item runs only once the item below it (its
 // predecessor) has finished. A prompt runs in the claude pane (done on the
 // hook's Stop event); a command runs in the shell window (done when its done-file

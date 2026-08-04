@@ -117,33 +117,33 @@ check(
 )
 check('`:` shorthand round-trips', applyOps(sh.lines, buildOps(sh.sessions)).join('\n') === shorthand)
 
-// 5c. `!` command lines parse as one-shot commands (isCmd) separate from prompts.
-const cmds = 'alpha\n\tprompt: do a\n\t!git status\n\t!pnpm test\n'
+// 5c. `$` command lines parse as one-shot commands (isCmd) separate from prompts.
+const cmds = 'alpha\n\tprompt: do a\n\t$git status\n\t$pnpm test\n'
 const cm = parse(cmds)
 check(
-	'`!` lines parse as commands, not prompts',
+	'`$` lines parse as commands, not prompts',
 	cm.sessions[0].prompts.filter((p) => !p.isCmd).length === 1 &&
 		cm.sessions[0].prompts.filter((p) => p.isCmd).map((p) => p.text).join(',') === 'git status,pnpm test',
 	JSON.stringify(cm.sessions[0].prompts.map((p) => [p.isCmd, p.text])),
 )
-check('`!` command lines round-trip', applyOps(cm.lines, buildOps(cm.sessions)).join('\n') === cmds)
+check('`$` command lines round-trip', applyOps(cm.lines, buildOps(cm.sessions)).join('\n') === cmds)
 // A ran command carries a [DONE] marker attached to its own line.
-const ran = parse('alpha\n\t!git status\n\t\t[DONE]\n')
+const ran = parse('alpha\n\t$git status\n\t\t[DONE]\n')
 check(
-	'`!` command [DONE] marker attaches to the command',
+	'`$` command [DONE] marker attaches to the command',
 	ran.sessions[0].prompts.length === 1 &&
 		ran.sessions[0].prompts[0].isCmd &&
 		ran.sessions[0].prompts[0].marker?.kind === 'DONE',
 )
 // An in-flight command carries an [EXECUTING] marker while it runs (gated on its
 // done-file before advancing to [DONE]); it round-trips verbatim.
-const running = 'alpha\n\t!sleep 5\n\t\t[EXECUTING]\n'
+const running = 'alpha\n\t$sleep 5\n\t\t[EXECUTING]\n'
 const rn = parse(running)
 check(
-	'`!` command [EXECUTING] marker attaches to the command',
+	'`$` command [EXECUTING] marker attaches to the command',
 	rn.sessions[0].prompts[0].isCmd && rn.sessions[0].prompts[0].marker?.kind === 'EXECUTING',
 )
-check('`!` executing command round-trips', applyOps(rn.lines, buildOps(rn.sessions)).join('\n') === running)
+check('`$` executing command round-trips', applyOps(rn.lines, buildOps(rn.sessions)).join('\n') === running)
 
 // 5d. planQueue: prompts and commands drain as ONE queue, bottom-to-top, one at a
 // time. `drain` simulates ticks, completing whatever is active each tick (a prompt
@@ -176,7 +176,7 @@ const drain = (initial: string, maxTicks = 50) => {
 
 // The reported failing case: interleaved commands and prompts must run in file
 // order (bottom-to-top), NOT with all commands shoved after all prompts.
-const interleaved = drain('bot-cmder\n\t! label hi2\n\t: say hello\n\t! label hi\n\t: /c\n')
+const interleaved = drain('bot-cmder\n\t$ label hi2\n\t: say hello\n\t$ label hi\n\t: /c\n')
 check(
 	'interleaved queue drains in bottom-to-top file order',
 	JSON.stringify(interleaved.order) === JSON.stringify(['prompt:/c', 'cmd:label hi', 'prompt:say hello', 'cmd:label hi2']),
@@ -190,11 +190,11 @@ check('pure prompts drain oldest-first, no re-run', JSON.stringify(proms.order) 
 check('drained queue keeps exactly one [DONE] on the frontier (newest)', proms.content.includes(': newest\n\t\t[DONE]') && (proms.content.match(/\[DONE\]/g) ?? []).length === 1, JSON.stringify(proms.content))
 
 // Pure commands drain bottom-to-top, one at a time.
-const cmds2 = drain('alpha\n\t!a\n\t!b\n\t!c\n')
+const cmds2 = drain('alpha\n\t$a\n\t$b\n\t$c\n')
 check('pure commands drain bottom-to-top', JSON.stringify(cmds2.order) === JSON.stringify(['cmd:c', 'cmd:b', 'cmd:a']), JSON.stringify(cmds2.order))
 
 // A command waits for the prompt below it before firing (the core requirement).
-const gated = drain('alpha\n\t!git push\n\t: make the change\n')
+const gated = drain('alpha\n\t$git push\n\t: make the change\n')
 check('command waits for the prompt below it', JSON.stringify(gated.order) === JSON.stringify(['prompt:make the change', 'cmd:git push']), JSON.stringify(gated.order))
 
 // Attention: a mid-task Notification flags the prompt, a later Stop completes it.
@@ -218,7 +218,7 @@ check('notification flags [NEEDS ATTENTION], later stop resolves it', attn.flagg
 // Deleting all prompts emits a /clear (and only then).
 const clearTest = (() => {
 	const rt = { starting: false, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: 2 }
-	const { sessions } = parse('alpha\n\t!keep me\n')
+	const { sessions } = parse('alpha\n\t$keep me\n')
 	return planQueue(sessions[0], rt, { now: 100, state: null, cmdDoneMtime: null })
 })()
 check('removing all prompts triggers /clear', JSON.stringify(clearTest) === JSON.stringify([{ type: 'clear' }]), JSON.stringify(clearTest))
@@ -266,7 +266,7 @@ check('the /clear fires once the `#` barrier is removed', JSON.stringify(clearBa
 // header (or a fully drained one) has nothing pending, so it stays unspawned.
 check('bare header has no pending input', !hasPendingInput(parse('alpha\n').sessions[0]))
 check('header with a fresh prompt has pending input', hasPendingInput(parse('alpha\n\t: do a\n').sessions[0]))
-check('header with a fresh command has pending input', hasPendingInput(parse('alpha\n\t!git status\n').sessions[0]))
+check('header with a fresh command has pending input', hasPendingInput(parse('alpha\n\t$git status\n').sessions[0]))
 check('all-done session has no pending input', !hasPendingInput(parse('alpha\n\t: do a\n\t\t[DONE]\n').sessions[0]))
 check('an executing session still counts as pending (resume after restart)', hasPendingInput(parse('alpha\n\t: do a\n\t\t[EXECUTING]\n').sessions[0]))
 check('a fully drained queue (frontier at top, nulls below) has no pending input', !hasPendingInput(parse('alpha\n\t: newest\n\t\t[DONE]\n\t: old\n').sessions[0]))

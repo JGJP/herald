@@ -53,7 +53,7 @@ superapp-2
     label/tmux name taken from its basename (e.g. `~/_dev/_startale/superapp` →
     `__superapp`). Use this to point sessions anywhere on disk; or
   - a **bare name** → dir `~/_dev/<name>`, tmux session `__<name>`.
-- `prompt: …` lines (`: …` is shorthand) and `!command` lines under a session form
+- `prompt: …` lines (`: …` is shorthand) and `$command` lines under a session form
   **one queue** that drains **bottom-to-top**, **one item at a time in file order**
   (oldest at the bottom; append new work at the top). An item runs only once the
   item **below** it — whether a prompt or a command — has finished, so the two
@@ -62,12 +62,12 @@ superapp-2
   and advances it to `[DONE]` when Claude signals it finished (the hook's Stop
   event). `[NEEDS ATTENTION]` replaces the marker when Claude blocks waiting for
   input mid-task.
-- `!command` lines run **once** in the session's **shell window** (the 2nd window,
+- `$command` lines run **once** in the session's **shell window** (the 2nd window,
   not the claude pane). A command is marked `[EXECUTING]` when dispatched and only
   advances to `[DONE]` once it has actually **exited** (the controller appends
   `; echo $status > state/<label>.cmd` and waits for that done-file). A command
   that never exits (e.g. a server) stays `[EXECUTING]` and blocks the rest of the
-  queue — by design. So e.g. `!git push` placed above `: make the change` runs only
+  queue — by design. So e.g. `$git push` placed above `: make the change` runs only
   after that prompt is done.
 - `#…` lines are **human-action barriers**: a step you must do yourself. When the
   drain reaches one it **stops there** — nothing above it runs, and the `#` line
@@ -86,7 +86,7 @@ superapp-2
 | --- | --- |
 | Add a session (bare name or path; the dir must exist) | Spawns `tmux` session `__<label>` running `claude` in that dir |
 | Add a `prompt:` line | Queues it; sends it to the claude pane when it reaches the front (the item below is done); marks `[EXECUTING]` → `[DONE]` |
-| Add a `!command` line | Queues it; runs it once in the shell window when it reaches the front; marks `[EXECUTING]` → `[DONE]` when it exits |
+| Add a `$command` line | Queues it; runs it once in the shell window when it reaches the front; marks `[EXECUTING]` → `[DONE]` when it exits |
 | Add a `#` line | Halts the queue at that point until you delete the line (a human-action barrier) |
 | Delete all prompts under a session | Sends `/clear` (session stays alive, idle) |
 | Delete the session name | Kills the tmux session |
