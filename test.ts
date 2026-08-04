@@ -310,6 +310,17 @@ check('alias header -> mapped path, label = alias', aliased.sessions[0].label ==
 check('alias `~` expands to home', parse('other\n', { other: '~/x' }).sessions[0].dir.endsWith('/x') && !parse('other\n', { other: '~/x' }).sessions[0].dir.startsWith('~'))
 check('non-aliased bare name still maps to ~/_dev/<name>', aliased.sessions[1].dir.endsWith('/_dev/barename'))
 
+// 6c. A `!` suffix on a header means "show it immediately": the label/dir resolve
+// from the name without the `!`, and firing the request strips the `!` from the line.
+const bang = parse('superapp!\n\t: do a\n')
+check('`!` header sets showNow and resolves the name without it', bang.sessions[0].showNow === true && bang.sessions[0].label === 'superapp' && bang.sessions[0].dir.endsWith('/_dev/superapp'))
+check('a plain header has showNow false', parse('superapp\n').sessions[0].showNow === false)
+check('an unfired `!` header round-trips verbatim', applyOps(bang.lines, buildOps(bang.sessions)).join('\n') === 'superapp!\n\t: do a\n')
+bang.sessions[0].showNowFired = true
+check('firing a `!` header strips the `!` from the line', applyOps(bang.lines, buildOps(bang.sessions)).join('\n') === 'superapp\n\t: do a\n')
+// `!` composes with aliases and paths (resolve the name without the `!`).
+check('`!` composes with an alias header', parse('app!\n', { app: '/opt/x' }).sessions[0].showNow === true && parse('app!\n', { app: '/opt/x' }).sessions[0].dir === '/opt/x')
+check('`!` composes with a path header', parse('/abs/foo!\n').sessions[0].showNow === true && parse('/abs/foo!\n').sessions[0].dir === '/abs/foo' && parse('/abs/foo!\n').sessions[0].label === 'foo')
 
 // 7. Blank lines between sessions are skipped but preserved on round-trip.
 const withBlanks = 'superapp\n\tprompt: do a thing\n\nsuperapp-2\n\tprompt: do another\n'

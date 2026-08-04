@@ -53,6 +53,12 @@ superapp-2
     label/tmux name taken from its basename (e.g. `~/_dev/_startale/superapp` →
     `__superapp`). Use this to point sessions anywhere on disk; or
   - a **bare name** → dir `~/_dev/<name>`, tmux session `__<name>`.
+
+  A trailing `!` on the header (e.g. `superapp!`) means **show it now**: the
+  supervisor switches your attached tmux client to the session immediately —
+  regardless of the queue — then strips the `!` (a one-shot request). The name/path
+  resolves from the header without the `!`. This is the eager cousin of a queued
+  `show` line (below).
 - `prompt: …` lines (`: …` is shorthand) and `$command` lines under a session form
   **one queue** that drains **bottom-to-top**, **one item at a time in file order**
   (oldest at the bottom; append new work at the top). An item runs only once the
@@ -95,6 +101,7 @@ superapp-2
 | Add a `$command` line | Queues it; runs it once in the shell window when it reaches the front; marks `[EXECUTING]` → `[DONE]` when it exits |
 | Add a `#` line | Halts the queue at that point until you delete the line (a human-action barrier) |
 | Add a `show` line | When the queue reaches it, switches your attached tmux client to this session, then deletes the line |
+| Add a `!` to a session header | Switches your attached tmux client to this session immediately (queue-independent), then strips the `!` |
 | Delete all prompts under a session | Sends `/clear` (session stays alive, idle) |
 | Delete the session name | Kills the tmux session |
 | Answer a `[NEEDS ATTENTION]` prompt | Type directly into the tmux; the marker returns to `[DONE]` when Claude finishes |

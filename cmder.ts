@@ -97,6 +97,14 @@ interface Session {
 	prompts: Prompt[]
 	sessionMarker: { text: string; lineIdx: number } | null
 	desiredSession: string | null
+	// The header text with any trailing `!` stripped (what to rewrite the line to
+	// once a "show now" request is consumed).
+	header: string
+	// A `!` suffix on the header ("show now"): switch the tmux client to this session
+	// immediately, regardless of the queue. `showNowFired` is set the tick we act on
+	// it, so buildOps strips the `!` — a one-shot request.
+	showNow: boolean
+	showNowFired: boolean
 }
 
 // A prompt line starts with `prompt:` or the shorthand `:`.
@@ -121,7 +129,11 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 		if (line.trim() === '') continue
 		const tabs = line.match(/^\t*/)?.[0] ?? ''
 		if (tabs.length === 0) {
-			const { label, dir } = resolveTarget(line.trim(), aliases)
+			const raw = line.trim()
+			// A trailing `!` on the header means "show this session immediately".
+			const showNow = raw.endsWith('!')
+			const header = showNow ? raw.slice(0, -1).trimEnd() : raw
+			const { label, dir } = resolveTarget(header, aliases)
 			cur = {
 				label,
 				dir,
@@ -130,6 +142,9 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 				prompts: [],
 				sessionMarker: null,
 				desiredSession: null,
+				header,
+				showNow,
+				showNowFired: false,
 			}
 			sessions.push(cur)
 			continue
@@ -230,6 +245,8 @@ export function buildOps(sessions: Session[]): Op[] {
 				ops.push({ pos: p.lineIdx, type: 'insert', text: `${p.indent}\t${MARKER[p.desiredKind]}` })
 			}
 		}
+		// A fired "show now" (`!` header) is consumed by stripping the `!`.
+		if (s.showNow && s.showNowFired) ops.push({ pos: s.headerIdx, type: 'replace', text: s.header })
 		const cur = s.sessionMarker?.text ?? null
 		if (cur === s.desiredSession) continue
 		if (s.sessionMarker) {
@@ -593,12 +610,18 @@ async function tick(rt: Rt) {
 		if (!live.has(label)) {
 			// Only spawn once there's something to feed the session; a bare header
 			// (or a fully drained one) gets no tmux session until work appears. A
-			// pending `show` counts as work — you can't switch to a session that
-			// isn't there yet — so it spawns, then fires when the drain reaches it.
-			if (!hasPendingInput(s)) continue
+			// pending `show`, or a `!` "show now" header, also counts — you can't
+			// switch to a session that isn't there yet — so it spawns first.
+			if (!hasPendingInput(s) && !s.showNow) continue
 			rt[label] = { starting: true, startedAt: Date.now(), sentAt: 0, cmdSentAt: 0, prevPromptCount: s.prompts.filter((p) => !p.isCmd && !p.isBarrier && !p.isShow).length }
 			actions.push(() => doSpawn(label, dir))
 			continue
+		}
+		// A `!` "show now" header switches the client immediately (even mid-boot — the
+		// tmux session exists), independent of the queue; consumed by stripping the `!`.
+		if (s.showNow) {
+			actions.push(() => showSession(label))
+			s.showNowFired = true
 		}
 		if (rt[label]?.starting) {
 			if (Date.now() - rt[label].startedAt < READY_MS) continue
