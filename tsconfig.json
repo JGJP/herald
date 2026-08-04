@@ -1,0 +1,17 @@
+{
+	"compilerOptions": {
+		"strict": true,
+		"strictNullChecks": true,
+		"esModuleInterop": true,
+		"moduleResolution": "bundler",
+		"module": "esnext",
+		"lib": ["ES2022"],
+		"skipLibCheck": true,
+		"target": "esnext",
+		"types": ["node"],
+		"paths": {
+			"~/*": ["./*"]
+		}
+	},
+	"exclude": ["node_modules"]
+}

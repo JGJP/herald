@@ -1,0 +1,21 @@
+{
+	"name": "bot-cmder",
+	"version": "1.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"start": "tsx cmder.ts",
+		"dry-run": "tsx cmder.ts --dry-run",
+		"setup": "tsx setup.ts",
+		"test": "tsx test.ts",
+		"type-check": "tsc --noEmit"
+	},
+	"devDependencies": {
+		"@jgjp/fire": "1.0.0",
+		"@types/node": "24.13.3",
+		"tsx": "4.23.1",
+		"typescript": "5.9.3",
+		"zod": "4.4.3",
+		"zx": "8.8.5"
+	}
+}
