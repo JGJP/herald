@@ -58,7 +58,7 @@ superapp-2
 
 | You do | Supervisor does |
 | --- | --- |
-| Add a session (bare name or path; the dir must exist) | Spawns `tmux` session `cmder-<label>` running `claude` in that dir |
+| Add a session (bare name or path; the dir must exist) | Spawns `tmux` session `__<label>` running `claude` in that dir |
 | Add a `prompt:` line | Sends it (once the running one finishes); marks `[EXECUTING]` → `[DONE]` |
 | Delete all prompts under a session | Sends `/clear` (session stays alive, idle) |
 | Delete the session name | Kills the tmux session |
@@ -69,7 +69,7 @@ controller) and window `shell` (a free shell for you to run commands in). The
 claude pane is tagged with a pane-scoped tmux option (`@cmder = claude`), so
 prompts always target it regardless of which window/pane is focused.
 
-Attach to a session with `tmux attach -t cmder-<label>` (switch windows with your
+Attach to a session with `tmux attach -t __<label>` (switch windows with your
 tmux prefix + `n`/`p`).
 
 ## Notes

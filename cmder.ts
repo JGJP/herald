@@ -211,7 +211,8 @@ const safeMtime = (p: string): number => {
 
 // ------------------------------------------------------------------ tmux glue
 
-const T = (label: string) => `cmder-${label}`
+const PREFIX = '__'
+const T = (label: string) => `${PREFIX}${label}`
 const q = (s: string) => `'${s.replace(/'/g, "'\\''")}'`
 
 async function listTmux(): Promise<Set<string>> {
@@ -219,7 +220,7 @@ async function listTmux(): Promise<Set<string>> {
 	const out = new Set<string>()
 	for (const line of r.stdout.split('\n')) {
 		const n = line.trim()
-		if (n.startsWith('cmder-')) out.add(n.slice('cmder-'.length))
+		if (n.startsWith(PREFIX)) out.add(n.slice(PREFIX.length))
 	}
 	return out
 }
