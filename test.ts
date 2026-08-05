@@ -300,6 +300,29 @@ check('show runs in queue order (below done → show → above)', JSON.stringify
 check('a fired show leaves the file without the show line', !showQueue.content.includes('show') && showQueue.content.includes(': after\n\t\t[DONE]'), JSON.stringify(showQueue.content))
 check('show never adds a second marker', showQueue.markerCounts.every((n) => n <= 1), JSON.stringify(showQueue.markerCounts))
 
+// A `show` reveals the window the last task before it used: the shell window when the
+// preceding item was a `$command`, the claude window when it was a prompt.
+const showWindowOf = (initial: string): string | undefined => {
+	let content = initial
+	const rt = { starting: false, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: initial.match(/^\t(?:prompt:|:)/gm)?.length ?? 0 }
+	let clock = 1000
+	for (let i = 0; i < 50; i++) {
+		clock += 100
+		const { lines, sessions } = parse(content)
+		const s = sessions[0]
+		const active = s.prompts.find((p) => p.desiredKind === 'EXECUTING' || p.desiredKind === 'ATTENTION')
+		const io = { now: clock, state: active && !active.isCmd ? { event: 'Stop', mtimeMs: clock } : null, cmdDoneMtime: active?.isCmd ? clock : null }
+		const show = planQueue(s, rt, io).find((d) => d.type === 'show')
+		if (show) return show.window
+		content = applyOps(lines, buildOps(sessions)).join('\n')
+		if (!active && s.prompts.every((p) => p.desiredKind !== 'EXECUTING')) break
+	}
+	return undefined
+}
+check('show after a $command reveals the shell window', showWindowOf('alpha\n\tshow\n\t$ deploy\n') === 'shell', showWindowOf('alpha\n\tshow\n\t$ deploy\n'))
+check('show after a prompt reveals the claude window', showWindowOf('alpha\n\tshow\n\t: do a thing\n') === 'claude', showWindowOf('alpha\n\tshow\n\t: do a thing\n'))
+check('show with nothing before it defaults to the claude window', showWindowOf('alpha\n\tshow\n') === 'claude', String(showWindowOf('alpha\n\tshow\n')))
+
 // A `show` sitting above a `#` barrier waits: the barrier halts the drain before it.
 const showBehindBarrier = drain('alpha\n\tshow\n\t# manual\n\t: first\n')
 check('show behind a `#` barrier does not fire', !showBehindBarrier.order.includes('show') && JSON.stringify(showBehindBarrier.order) === JSON.stringify(['prompt:first']), JSON.stringify(showBehindBarrier.order))

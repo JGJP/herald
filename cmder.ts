@@ -467,10 +467,16 @@ async function doKill(label: string, switchTo: string | null) {
 // viewing a controller-managed (`__*`) session — i.e. the terminal you use to watch
 // cmder sessions (e.g. WezTerm). Clients parked on your own non-`__` sessions are
 // left alone. Run outside tmux there is no "current" client, so we target it by name.
-async function showSession(label: string) {
-	log(`showing ${T(label)}`)
+async function showSession(label: string, window?: Window) {
+	log(`showing ${T(label)}${window ? ` (${window})` : ''}`)
 	if (DRY) return
 	const tm = $({ nothrow: true, quiet: true })
+	// Reveal the window the caller asked for (e.g. the shell for a `$command` show),
+	// so switching the client lands on it rather than the session's last-active window.
+	if (window) {
+		const pane = window === 'shell' ? await shellPane(label) : await claudePane(label)
+		if (pane) await tm`tmux select-window -t ${pane}`
+	}
 	const r = await tm`tmux list-clients -F ${'#{client_name}\t#{client_session}'}`
 	for (const line of r.stdout.split('\n')) {
 		const [client, session] = line.split('\t')
@@ -502,9 +508,13 @@ const atomicWrite = (content: string) => {
 // items above it (smaller lineIdx) are pending, items below it have already run.
 
 export type DispatchType = 'prompt' | 'cmd' | 'clear' | 'show'
+export type Window = 'claude' | 'shell'
 export interface Dispatch {
 	type: DispatchType
 	text?: string
+	// For a `show`: the window the last task before it used, so the reveal lands on
+	// that window (the shell for a `$command`, the claude pane for a prompt).
+	window?: Window
 }
 export interface PlanIO {
 	now: number
@@ -533,6 +543,16 @@ export const hasPendingInput = (s: Session): boolean => {
 	if (s.prompts.some((p) => p.desiredKind === 'EXECUTING' || p.desiredKind === 'ATTENTION')) return true
 	const next = nearestAbove(s, frontierIdx(s))
 	return next !== null && !next.isBarrier
+}
+
+// The window used by the last real task before a `show` (the nearest prompt/command
+// below it in file order, since the queue drains bottom-to-top). Defaults to the
+// claude pane when nothing ran before it.
+const lastTaskWindow = (s: Session, showIdx: number): Window => {
+	const below = s.prompts
+		.filter((p) => p.lineIdx > showIdx && !p.isShow && !p.isBarrier)
+		.sort((a, b) => a.lineIdx - b.lineIdx)[0]
+	return below?.isCmd ? 'shell' : 'claude'
 }
 
 // Only the frontier item keeps a marker: strip every other [EXECUTING]/[DONE].
@@ -570,7 +590,7 @@ export function planQueue(s: Session, rt: RtEntry, io: PlanIO): Dispatch[] {
 		for (;;) {
 			const next = nearestAbove(s, cursor)
 			if (next?.isShow) {
-				out.push({ type: 'show' })
+				out.push({ type: 'show', window: lastTaskWindow(s, next.lineIdx) })
 				next.fired = true
 				cursor = next.lineIdx
 				continue
@@ -677,7 +697,7 @@ async function tick(rt: Rt) {
 			if (d.type === 'prompt') actions.push(() => sendLine(label, d.text!, true))
 			else if (d.type === 'cmd') actions.push(() => sendCmd(label, d.text!))
 			else if (d.type === 'clear') actions.push(() => sendLine(label, '/clear', true))
-			else if (d.type === 'show') actions.push(() => showSession(label))
+			else if (d.type === 'show') actions.push(() => showSession(label, d.window))
 		}
 	}
 
