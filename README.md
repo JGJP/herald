@@ -25,7 +25,25 @@ are a no-op for your normal Claude sessions and only fire for cmder-launched one
 ```sh
 pnpm start           # watch ./cmder-control and reconcile every second
 pnpm start --dry-run # log intended tmux actions / rewrites without doing them
+pnpm cmder           # edit cmder-control in a live Neovim (see below)
 ```
+
+## Editing live (`pnpm cmder`)
+
+`pnpm cmder` opens `cmder-control` in **real Neovim** (your own config and
+keybindings) while the supervisor keeps writing to the same file. A small sidecar
+attached over nvim's RPC socket folds the controller's out-of-band writes (marker
+updates, drained `show` lines, …) into your buffer **without disturbing what you're
+typing**:
+
+- It only touches the buffer while you're idle in **normal mode**, so keystrokes are
+  never lost — a pending update lands the moment you leave insert.
+- With **no unsaved edits**, it's a clean reload (your cursor stays put).
+- With **unsaved edits**, it 3-way merges the controller's change into your buffer
+  (your line wins on a genuine conflict) and keeps the cursor on the line you were on.
+
+Save with `:w` as usual — the display and file are then in sync. Requires `nvim` on
+your `PATH`; respects `CMDER_FILE`. Runs alongside `pnpm start` (that's the point).
 
 ## The `cmder-control` file
 

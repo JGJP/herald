@@ -1,5 +1,6 @@
 #!/usr/bin/env tsx
 import { applyOps, buildOps, hasPendingInput, parse, planQueue } from './cmder'
+import { merge3, nearestIndex, toLines } from './tui'
 
 let failures = 0
 const check = (name: string, cond: boolean, detail?: string) => {
@@ -347,6 +348,28 @@ const withBlanks = 'superapp\n\tprompt: do a thing\n\nsuperapp-2\n\tprompt: do a
 const wb = parse(withBlanks)
 check('blank-separated sessions both parsed', wb.sessions.length === 2 && wb.sessions.map((s) => s.label).join(',') === 'superapp,superapp-2')
 check('blank lines round-trip byte-identical', applyOps(wb.lines, buildOps(wb.sessions)).join('\n') === withBlanks)
+
+// 8. `pnpm cmder` TUI sync helpers. toLines mirrors nvim's buffer representation
+// (a trailing newline is the eol marker, not an extra empty line).
+check('toLines drops the trailing-newline eol', JSON.stringify(toLines('a\nb\n')) === JSON.stringify(['a', 'b']))
+check('toLines keeps a missing final newline as a real last line', JSON.stringify(toLines('a\nb')) === JSON.stringify(['a', 'b']))
+
+// The core sync guarantee: the controller flips a marker (theirs) while the user is
+// editing a prompt on another line (ours). The merge keeps BOTH — the user's edit
+// is never lost — and the untouched controller line is picked up.
+const base8 = ['superapp', '\t: fix the bug', '\t\t[EXECUTING]', '\t: start X', '\t\t[DONE]']
+const ours8 = ['superapp', '\t: fix the login bug now', '\t\t[EXECUTING]', '\t: start X', '\t\t[DONE]'] // user edited a prompt
+const theirs8 = ['superapp', '\t: fix the bug', '\t\t[DONE]', '\t: start X', '\t\t[DONE]'] // controller: EXECUTING -> DONE
+const merged8 = merge3(ours8, base8, theirs8)
+check('merge keeps the user edit and the controller marker change', JSON.stringify(merged8) === JSON.stringify(['superapp', '\t: fix the login bug now', '\t\t[DONE]', '\t: start X', '\t\t[DONE]']), JSON.stringify(merged8))
+
+// On a genuine same-line conflict (both changed the same line), OURS wins so the
+// line you're typing is never dropped.
+check('same-line conflict keeps ours', JSON.stringify(merge3(['x', 'MINE'], ['x', 'o'], ['x', 'THEIRS'])) === JSON.stringify(['x', 'MINE']), JSON.stringify(merge3(['x', 'MINE'], ['x', 'o'], ['x', 'THEIRS'])))
+
+// nearestIndex keeps the cursor on the same logical line after lines shift.
+check('nearestIndex finds the anchor line nearest the old row', nearestIndex(['a', 'x', 'b', 'x', 'c'], 'x', 3) === 3 && nearestIndex(['a', 'x', 'b', 'x', 'c'], 'x', 1) === 1)
+check('nearestIndex falls back to a clamped row when absent', nearestIndex(['a', 'b'], 'zzz', 9) === 1)
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)
