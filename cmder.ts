@@ -441,10 +441,21 @@ async function doSpawn(label: string, dir: string) {
 	await tm`tmux select-window -t ${await claudePane(label)}`
 }
 
-async function doKill(label: string) {
+async function doKill(label: string, switchTo: string | null) {
 	log(`killing ${T(label)}`)
 	if (DRY) return
-	await $({ nothrow: true, quiet: true })`tmux kill-session -t ${T(label)}`
+	const tm = $({ nothrow: true, quiet: true })
+	// If a client is currently viewing this session, move it to a surviving
+	// controller session first — otherwise killing drops the client onto an
+	// unrelated session or detaches it entirely.
+	if (switchTo) {
+		const r = await tm`tmux list-clients -F ${'#{client_name}\t#{client_session}'}`
+		for (const line of r.stdout.split('\n')) {
+			const [client, session] = line.split('\t')
+			if (client && session === T(label)) await tm`tmux switch-client -c ${client} -t ${T(switchTo)}`
+		}
+	}
+	await tm`tmux kill-session -t ${T(label)}`
 }
 
 // Bring this session on screen by switching the first client that's currently
@@ -665,9 +676,12 @@ async function tick(rt: Rt) {
 		}
 	}
 
+	// A session that stays in the control file (and is live) is a safe place to
+	// park a client before we kill the session it's watching.
+	const survivor = [...live].find((label) => modelLabels.has(label) || RESERVED.has(label)) ?? null
 	for (const label of live) {
 		if (modelLabels.has(label) || RESERVED.has(label)) continue
-		actions.push(() => doKill(label))
+		actions.push(() => doKill(label, survivor))
 		rmState(label)
 		rmCmdDone(label)
 		delete rt[label]
