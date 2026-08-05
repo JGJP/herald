@@ -373,28 +373,35 @@ async function claudePane(label: string): Promise<string> {
 	const r = await $({
 		nothrow: true,
 		quiet: true,
-	})`tmux list-panes -s -t ${T(label)} -F ${'#{pane_id}\t#{@cmder}'}`
+	})`tmux list-panes -s -t ${T(label)} -F ${'#{pane_id}\t#{@cmder}\t#{window_name}'}`
 	const ids: string[] = []
+	let byName: string | null = null
 	for (const line of r.stdout.split('\n')) {
-		const [id, role] = line.split('\t')
+		const [id, role, win] = line.split('\t')
 		if (!id) continue
 		ids.push(id)
 		if (role === 'claude') return id
+		if (win === 'claude') byName ??= id
 	}
-	return ids[0] ?? T(label) // fallback: first pane (claude window is created first)
+	return byName ?? ids[0] ?? T(label) // fall back to the `claude` window, then first pane
 }
 
-// The shell pane is the one tagged `@cmder shell` (the session's 2nd window).
+// The shell pane is the one tagged `@cmder shell` (the session's 2nd window). Fall
+// back to the pane in the window still named `shell` — sessions spawned before the
+// `@cmder` tag existed (or whose tag was lost) have no tag but keep the window name.
 async function shellPane(label: string): Promise<string | null> {
 	const r = await $({
 		nothrow: true,
 		quiet: true,
-	})`tmux list-panes -s -t ${T(label)} -F ${'#{pane_id}\t#{@cmder}'}`
+	})`tmux list-panes -s -t ${T(label)} -F ${'#{pane_id}\t#{@cmder}\t#{window_name}'}`
+	let byName: string | null = null
 	for (const line of r.stdout.split('\n')) {
-		const [id, role] = line.split('\t')
+		const [id, role, win] = line.split('\t')
+		if (!id) continue
 		if (role === 'shell') return id
+		if (win === 'shell') byName ??= id
 	}
-	return null
+	return byName
 }
 
 async function typeInto(pane: string, text: string, vimInsert = false) {
