@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -7,6 +7,9 @@ import { fire } from '@jgjp/fire'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const hookPath = resolve(here, 'cmder-hook')
+const fishHookPath = resolve(here, 'cmder-fish.fish')
+const fishConfDir = resolve(homedir(), '.config', 'fish', 'conf.d')
+const fishLinkPath = resolve(fishConfDir, 'cmder.fish')
 const settingsPath = resolve(homedir(), '.claude', 'settings.json')
 
 // A single hook entry in Claude Code's settings.json shape.
@@ -23,6 +26,21 @@ void fire(async () => {
 	if (!existsSync(stateDir)) mkdirSync(stateDir, { recursive: true })
 	console.log(`hook is executable: ${hookPath}`)
 	console.log(`state dir ready: ${stateDir}`)
+
+	// 1b. Symlink the fish_postexec hook into fish's conf.d so command completion is
+	//     reported by fish itself (see cmder-fish.fish). Repo file stays the source.
+	if (existsSync(fishConfDir)) {
+		const entry = lstatSync(fishLinkPath, { throwIfNoEntry: false })
+		if (entry?.isSymbolicLink() && readlinkSync(fishLinkPath) === fishHookPath) {
+			console.log(`fish hook already linked: ${fishLinkPath}`)
+		} else {
+			if (entry) unlinkSync(fishLinkPath)
+			symlinkSync(fishHookPath, fishLinkPath)
+			console.log(`linked fish hook: ${fishLinkPath} -> ${fishHookPath}`)
+		}
+	} else {
+		console.log(`fish conf.d not found (${fishConfDir}); skipping fish hook`)
+	}
 
 	// 2. Merge Stop + Notification + UserPromptSubmit hooks into global settings.json
 	//    without clobbering existing hooks. UserPromptSubmit lets the controller flip

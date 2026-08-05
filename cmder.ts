@@ -410,9 +410,9 @@ async function sendLine(label: string, text: string, vimInsert = false) {
 	await typeInto(await claudePane(label), text, vimInsert)
 }
 
-// Run a `$command` line in the session's shell window. We append a sentinel that
-// writes the command's exit status to its done-file *after* it exits, so the
-// controller can tell when the command has actually finished (not just been sent).
+// Run a `$command` line in the session's shell window. The fish_postexec hook in
+// that window writes the command's exit status to its done-file *after* it exits,
+// so the controller can tell when the command has actually finished (not just sent).
 async function sendCmd(label: string, text: string) {
 	if (DRY) {
 		log(`[dry] cmd ${T(label)}: ${JSON.stringify(text)}`)
@@ -423,20 +423,25 @@ async function sendCmd(label: string, text: string) {
 		log(`no shell pane for ${T(label)}, skipping command`)
 		return
 	}
-	await typeInto(pane, `${text}; echo $status > ${q(cmdDonePath(label))}`)
+	// The command's exit status is written to its done-file by the fish_postexec
+	// hook in the shell window (see cmder-fish.fish), so we type it verbatim.
+	await typeInto(pane, text)
 }
 
 async function doSpawn(label: string, dir: string) {
 	log(`spawning ${T(label)} in ${dir}`)
 	if (DRY) return
 	const tm = $({ nothrow: true, quiet: true })
-	await tm`tmux new-session -d -s ${T(label)} -n claude -c ${dir}`
+	// CMDER_LABEL/CMDER_STATE are set on the whole session (claude inherits them for
+	// its Stop/Notification hook); CMDER_SHELL marks only the shell window, where the
+	// fish_postexec hook writes command done-files (see cmder-fish.fish).
+	await tm`tmux new-session -d -s ${T(label)} -n claude -c ${dir} -e ${`CMDER_LABEL=${label}`} -e ${`CMDER_STATE=${STATE}`}`
 	// Tag the claude pane, then open a second window as a free shell for the user.
 	await tm`tmux set-option -p -t ${T(label)} @cmder claude`
-	await tm`tmux new-window -t ${T(label)} -n shell -c ${dir}`
+	await tm`tmux new-window -t ${T(label)} -n shell -c ${dir} -e CMDER_SHELL=1`
 	await tm`tmux set-option -p -t ${T(label)} @cmder shell`
 	await sleep(300)
-	await sendLine(label, `set -x CMDER_LABEL ${q(label)}; set -x CMDER_STATE ${q(STATE)}; claude`)
+	await sendLine(label, 'claude')
 	// Leave the claude window focused so an attach shows it first.
 	await tm`tmux select-window -t ${await claudePane(label)}`
 }
