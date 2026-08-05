@@ -88,6 +88,11 @@ interface Prompt {
 	// deletes the line — the request is consumed, not left as clutter.
 	isShow: boolean
 	fired: boolean
+	// A `!` appended to this item's status marker (e.g. `[NEEDS ATTENTION]!`) is a
+	// one-shot "reveal this item's window now" request, like `!` on a header. It fires
+	// once (`showNowFired`) and buildOps strips the `!`, consuming the request.
+	showNow?: boolean
+	showNowFired?: boolean
 }
 interface Session {
 	label: string
@@ -200,12 +205,15 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 				isShow: true,
 				fired: false,
 			})
-		} else if (/^\[.*\]$/.test(t)) {
-			const kind: Kind | null = /executing/i.test(t)
+		} else if (/^\[.*\]!?$/.test(t)) {
+			// A trailing `!` on a marker means "reveal this item's window now".
+			const bang = t.endsWith('!')
+			const body = bang ? t.slice(0, -1).trimEnd() : t
+			const kind: Kind | null = /executing/i.test(body)
 				? 'EXECUTING'
-				: /attention/i.test(t)
+				: /attention/i.test(body)
 					? 'ATTENTION'
-					: /done/i.test(t)
+					: /done/i.test(body)
 						? 'DONE'
 						: null
 			// A status marker attaches to the nearest preceding prompt without a
@@ -214,9 +222,10 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 			if (kind && target) {
 				target.marker = { kind, lineIdx: i }
 				target.desiredKind = kind
+				if (bang) target.showNow = true
 			} else {
-				cur.sessionMarker = { text: t, lineIdx: i }
-				cur.desiredSession = t
+				cur.sessionMarker = { text: body, lineIdx: i }
+				cur.desiredSession = body
 			}
 		}
 	}
@@ -237,7 +246,11 @@ export function buildOps(sessions: Session[]): Op[] {
 				continue
 			}
 			const cur = p.marker?.kind ?? null
-			if (cur === p.desiredKind) continue
+			if (cur === p.desiredKind) {
+				// A fired marker `!` ("reveal now") is consumed by stripping the `!`.
+				if (p.showNowFired && p.marker) ops.push({ pos: p.marker.lineIdx, type: 'replace', text: `${p.indent}\t${MARKER[cur!]}` })
+				continue
+			}
 			if (p.marker) {
 				if (p.desiredKind === null) ops.push({ pos: p.marker.lineIdx, type: 'delete' })
 				else ops.push({ pos: p.marker.lineIdx, type: 'replace', text: `${p.indent}\t${MARKER[p.desiredKind]}` })
@@ -666,6 +679,14 @@ async function tick(rt: Rt) {
 		if (s.showNow) {
 			actions.push(() => showSession(label))
 			s.showNowFired = true
+		}
+		// A `!` appended to an item's marker (e.g. `[NEEDS ATTENTION]!`) reveals that
+		// item's window — the shell for a `$command`, the claude pane otherwise.
+		for (const p of s.prompts) {
+			if (!p.showNow || p.showNowFired) continue
+			const window: Window = p.isCmd ? 'shell' : 'claude'
+			actions.push(() => showSession(label, window))
+			p.showNowFired = true
 		}
 		// Every session we see live for the first time is un-ready until it clears the
 		// grace below. A fresh spawn set this above (with a boot deadline); a reconnect

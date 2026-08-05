@@ -101,6 +101,19 @@ m2b.sessions[1].prompts[0].desiredKind = null
 const cleared = applyOps(m2b.lines, buildOps(m2b.sessions)).join('\n')
 check('clearing attention removes the marker line', !cleared.includes('[NEEDS ATTENTION]') && cleared.includes('prompt: investigate the flaky test\nsuperapp-3'))
 
+// 4c. A `!` appended to a marker ("reveal this item's window now") parses as an
+// ordinary marker plus a one-shot showNow request; unfired it round-trips verbatim,
+// and once fired buildOps strips the `!` (leaving the plain marker).
+const bangAttn = 'alpha\n\t: fix it\n\t\t[NEEDS ATTENTION]!\n'
+const ba = parse(bangAttn)
+check('marker `!` parses as its kind + a showNow request', ba.sessions[0].prompts[0].marker?.kind === 'ATTENTION' && ba.sessions[0].prompts[0].showNow === true)
+check('an unfired marker `!` round-trips verbatim', applyOps(ba.lines, buildOps(ba.sessions)).join('\n') === bangAttn)
+ba.sessions[0].prompts[0].showNowFired = true
+check('a fired marker `!` is stripped to the plain marker', applyOps(ba.lines, buildOps(ba.sessions)).join('\n') === 'alpha\n\t: fix it\n\t\t[NEEDS ATTENTION]\n')
+// A `!` on a `$command`'s [EXECUTING] marker targets the shell window; on a prompt, claude.
+const baCmd = parse('alpha\n\t$ deploy\n\t\t[EXECUTING]!\n')
+check('marker `!` on a command keeps the shell as its window', baCmd.sessions[0].prompts[0].isCmd === true && baCmd.sessions[0].prompts[0].showNow === true)
+
 // 5. Minimal file with a single session.
 const single = 'alpha\n\tprompt: do a\n\tprompt: do b\n'
 const nb = parse(single)
