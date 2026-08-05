@@ -21,6 +21,7 @@ const CMDER = process.env.CMDER_FILE ? resolve(process.env.CMDER_FILE) : join(HE
 const ALIASES_FILE = process.env.CMDER_ALIASES ? resolve(process.env.CMDER_ALIASES) : join(HERE, 'cmder-aliases.yaml')
 const STATE = join(HERE, 'state')
 const RT_PATH = join(STATE, 'controller.json')
+const LOCK = join(STATE, 'supervisor.lock')
 const DEV_DIR = join(homedir(), '_dev')
 // Labels the controller never manages (a blacklist). Empty by default.
 const RESERVED = new Set<string>([])
@@ -763,6 +764,45 @@ async function tick(rt: Rt) {
 	saveRt(rt)
 }
 
+// Two supervisors watching the same control file race on its atomic write and one
+// crashes, so we refuse to start a second. We hold a PID lockfile; a stale lock
+// (owner no longer alive, e.g. after a crash) is reclaimed. Released on exit/signals.
+const pidAlive = (pid: number): boolean => {
+	try {
+		process.kill(pid, 0)
+		return true
+	} catch (e) {
+		return (e as NodeJS.ErrnoException).code === 'EPERM' // exists, just not ours to signal
+	}
+}
+const acquireLock = () => {
+	for (let attempt = 0; attempt < 2; attempt++) {
+		try {
+			writeFileSync(LOCK, String(process.pid), { flag: 'wx' })
+			const release = () => {
+				try {
+					if (readFileSync(LOCK, 'utf8') === String(process.pid)) unlinkSync(LOCK)
+				} catch {}
+			}
+			process.on('exit', release)
+			for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.on(sig, () => (release(), process.exit(1)))
+			return
+		} catch (e) {
+			if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
+			const owner = Number(readFileSync(LOCK, 'utf8').trim())
+			if (owner && owner !== process.pid && pidAlive(owner)) {
+				log(`another bot-cmder supervisor is already running (pid ${owner}); refusing to start a second`)
+				process.exit(1)
+			}
+			try {
+				unlinkSync(LOCK) // stale lock (owner gone) — reclaim it
+			} catch {}
+		}
+	}
+	log('could not acquire supervisor lock')
+	process.exit(1)
+}
+
 const isMain = (() => {
 	const entry = process.argv[1]
 	if (!entry) return false
@@ -786,6 +826,7 @@ if (isMain)
 			log('dry-run complete (no changes made)')
 			return
 		}
+		acquireLock()
 		log(`bot-cmder watching ${CMDER}`)
 		while (true) {
 			await tick(rt)
