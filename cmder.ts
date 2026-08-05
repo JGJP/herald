@@ -423,10 +423,8 @@ async function typeInto(pane: string, text: string, vimInsert = false) {
 // `vimInsert` prep only makes sense for a running claude (prompts, /clear); the
 // launch line below is typed into the fish shell before claude starts.
 async function sendLine(label: string, text: string, vimInsert = false) {
-	if (DRY) {
-		log(`[dry] send ${T(label)}: ${JSON.stringify(text)}`)
-		return
-	}
+	log(`${DRY ? '[dry] ' : ''}send ${T(label)}: ${JSON.stringify(text)}`)
+	if (DRY) return
 	await typeInto(await claudePane(label), text, vimInsert)
 }
 
@@ -434,10 +432,8 @@ async function sendLine(label: string, text: string, vimInsert = false) {
 // that window writes the command's exit status to its done-file *after* it exits,
 // so the controller can tell when the command has actually finished (not just sent).
 async function sendCmd(label: string, text: string) {
-	if (DRY) {
-		log(`[dry] cmd ${T(label)}: ${JSON.stringify(text)}`)
-		return
-	}
+	log(`${DRY ? '[dry] ' : ''}cmd ${T(label)}: ${JSON.stringify(text)}`)
+	if (DRY) return
 	const pane = await shellPane(label)
 	if (!pane) {
 		log(`no shell pane for ${T(label)}, skipping command`)
