@@ -193,7 +193,8 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 				isShow: false,
 				fired: false,
 			})
-		} else if (/^show$/i.test(t)) {
+		} else if (/^show$/i.test(t) || t === '!') {
+			// A bare `!` line is shorthand for `show`.
 			cur.prompts.push({
 				text: '',
 				lineIdx: i,

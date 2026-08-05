@@ -306,6 +306,15 @@ check('an unfired `show` round-trips verbatim', applyOps(showParse.lines, buildO
 showItem!.fired = true
 check('a fired `show` is deleted from the file', applyOps(showParse.lines, buildOps(showParse.sessions)).join('\n') === 'alpha\n\t: do a\n')
 
+// A bare `!` line is shorthand for `show`: same isShow queue item, round-trips
+// verbatim while pending, and is deleted once fired.
+const bangShow = parse('alpha\n\t: do a\n\t!\n')
+const bangShowItem = bangShow.sessions[0].prompts.find((p) => p.isShow)
+check('bare `!` parses as a show queue item', !!bangShowItem && bangShow.sessions[0].prompts.length === 2)
+check('an unfired `!` show round-trips verbatim', applyOps(bangShow.lines, buildOps(bangShow.sessions)).join('\n') === 'alpha\n\t: do a\n\t!\n')
+bangShowItem!.fired = true
+check('a fired `!` show is deleted from the file', applyOps(bangShow.lines, buildOps(bangShow.sessions)).join('\n') === 'alpha\n\t: do a\n')
+
 // `show` drains in queue order: it fires only after the item below it is done, and
 // before the item above it runs. The `show` line is consumed (deleted) when it fires.
 const showQueue = drain('alpha\n\t: after\n\tshow\n\t: before\n')
