@@ -13,11 +13,11 @@ second.
 ```sh
 pnpm install
 pnpm setup   # makes cmder-hook executable, creates state/, and installs the
-             # Stop + Notification hooks into ~/.claude/settings.json
+             # Stop + Notification + UserPromptSubmit hooks into ~/.claude/settings.json
 ```
 
-`setup` merges two hooks into your **global** `~/.claude/settings.json` (backing
-it up to `settings.json.cmder-bak`). Both are guarded by `$CMDER_LABEL`, so they
+`setup` merges its hooks into your **global** `~/.claude/settings.json` (backing
+it up to `settings.json.cmder-bak`). All are guarded by `$CMDER_LABEL`, so they
 are a no-op for your normal Claude sessions and only fire for cmder-launched ones.
 
 ## Run
@@ -67,7 +67,8 @@ superapp-2
 - `prompt:` lines run in the **claude pane**; the supervisor marks one `[EXECUTING]`
   and advances it to `[DONE]` when Claude signals it finished (the hook's Stop
   event). `[NEEDS ATTENTION]` replaces the marker when Claude blocks waiting for
-  input mid-task.
+  input mid-task; answering it (submitting a prompt into the pane) flips it back to
+  `[EXECUTING]`.
 - `$command` lines run **once** in the session's **shell window** (the 2nd window,
   not the claude pane). A command is marked `[EXECUTING]` when dispatched and only
   advances to `[DONE]` once it has actually **exited** (the controller appends
@@ -104,7 +105,7 @@ superapp-2
 | Add a `!` to a session header | Switches your attached tmux client to this session immediately (queue-independent), then strips the `!` |
 | Delete all prompts under a session | Sends `/clear` (session stays alive, idle) |
 | Delete the session name | Kills the tmux session |
-| Answer a `[NEEDS ATTENTION]` prompt | Type directly into the tmux; the marker returns to `[DONE]` when Claude finishes |
+| Answer a `[NEEDS ATTENTION]` prompt | Type directly into the tmux; the marker flips back to `[EXECUTING]` on submit, then `[DONE]` when Claude finishes |
 
 Each spawned session has **two windows**: window `claude` (driven by the
 controller) and window `shell` (a free shell for you to run commands in). The

@@ -215,6 +215,26 @@ const attn = (() => {
 })()
 check('notification flags [NEEDS ATTENTION], later stop resolves it', attn.flagged && attn.content.includes('[DONE]') && !attn.content.includes('[NEEDS ATTENTION]'), JSON.stringify(attn))
 
+// Answering a [NEEDS ATTENTION] prompt (a UserPromptSubmit event) flips it back to
+// [EXECUTING]; a later Stop then completes it as usual.
+const answered = (() => {
+	let content = 'alpha\n\t: fix the bug\n'
+	const rt = { starting: false, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: 1 }
+	const step = (io: Parameters<typeof planQueue>[2]) => {
+		const { lines, sessions } = parse(content)
+		planQueue(sessions[0], rt, io)
+		content = applyOps(lines, buildOps(sessions)).join('\n')
+	}
+	step({ now: 100, state: null, cmdDoneMtime: null }) // dispatch
+	step({ now: 200, state: { event: 'Notification', mtimeMs: 200 }, cmdDoneMtime: null }) // blocks
+	const flagged = content.includes('[NEEDS ATTENTION]')
+	step({ now: 300, state: { event: 'UserPromptSubmit', mtimeMs: 300 }, cmdDoneMtime: null }) // answered
+	const executing = content.includes('[EXECUTING]') && !content.includes('[NEEDS ATTENTION]')
+	step({ now: 400, state: { event: 'Stop', mtimeMs: 400 }, cmdDoneMtime: null }) // finishes
+	return { flagged, executing, content }
+})()
+check('answering [NEEDS ATTENTION] flips it back to [EXECUTING], then Stop -> [DONE]', answered.flagged && answered.executing && answered.content.includes('[DONE]'), JSON.stringify(answered))
+
 // Deleting all prompts emits a /clear (and only then).
 const clearTest = (() => {
 	const rt = { starting: false, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: 2 }

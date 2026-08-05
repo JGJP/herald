@@ -578,6 +578,11 @@ export function planQueue(s: Session, rt: RtEntry, io: PlanIO): Dispatch[] {
 		} else if (io.state && io.state.event === 'Notification' && io.state.mtimeMs > rt.sentAt) {
 			// Claude is blocked waiting for input mid-task: flag this prompt.
 			active.desiredKind = 'ATTENTION'
+		} else if (io.state && io.state.event === 'UserPromptSubmit' && io.state.mtimeMs > rt.sentAt) {
+			// A prompt was submitted into the pane — the user answered a blocking
+			// question — so Claude is working again: clear [NEEDS ATTENTION] back to
+			// [EXECUTING]. (A no-op while already executing.)
+			active.desiredKind = 'EXECUTING'
 		}
 	} else if (rt.prevPromptCount >= 1 && promptCount === 0 && !hasBarrier) {
 		// Every prompt was deleted: reset the claude conversation.
