@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-import { applyOps, buildOps, hasPendingInput, parse, planQueue } from './cmder'
+import { applyOps, buildOps, frontierWindow, hasPendingInput, parse, planQueue } from './cmder'
 import { merge3, nearestIndex, toLines } from './tui'
 
 let failures = 0
@@ -335,6 +335,15 @@ const showWindowOf = (initial: string): string | undefined => {
 check('show after a $command reveals the shell window', showWindowOf('alpha\n\tshow\n\t$ deploy\n') === 'shell', showWindowOf('alpha\n\tshow\n\t$ deploy\n'))
 check('show after a prompt reveals the claude window', showWindowOf('alpha\n\tshow\n\t: do a thing\n') === 'claude', showWindowOf('alpha\n\tshow\n\t: do a thing\n'))
 check('show with nothing before it defaults to the claude window', showWindowOf('alpha\n\tshow\n') === 'claude', String(showWindowOf('alpha\n\tshow\n')))
+
+// A header `!` reveals the frontier item's window: whatever is [EXECUTING] (a command
+// -> shell, a prompt -> claude), else the most recently [DONE] one, else nothing.
+const fw = (s: string) => frontierWindow(parse(s).sessions[0])
+check('frontier window is the executing command\'s shell', fw('alpha!\n\t$ deploy\n\t\t[EXECUTING]\n') === 'shell', String(fw('alpha!\n\t$ deploy\n\t\t[EXECUTING]\n')))
+check('frontier window is the executing prompt\'s claude', fw('alpha!\n\t: work\n\t\t[EXECUTING]\n') === 'claude', String(fw('alpha!\n\t: work\n\t\t[EXECUTING]\n')))
+check('executing wins over a done item below it', fw('alpha!\n\t: work\n\t\t[EXECUTING]\n\t$ built\n\t\t[DONE]\n') === 'claude', String(fw('alpha!\n\t: work\n\t\t[EXECUTING]\n\t$ built\n\t\t[DONE]\n')))
+check('with nothing executing, the last [DONE] wins', fw('alpha!\n\t$ built\n\t\t[DONE]\n') === 'shell', String(fw('alpha!\n\t$ built\n\t\t[DONE]\n')))
+check('frontier window is undefined when nothing has run', fw('alpha!\n\t: pending\n') === undefined, String(fw('alpha!\n\t: pending\n')))
 
 // A `show` sitting above a `#` barrier waits: the barrier halts the drain before it.
 const showBehindBarrier = drain('alpha\n\tshow\n\t# manual\n\t: first\n')

@@ -571,6 +571,17 @@ const lastTaskWindow = (s: Session, showIdx: number): Window => {
 	return below?.isCmd ? 'shell' : 'claude'
 }
 
+// The window of the session's frontier item — whatever is currently [EXECUTING] (or
+// [NEEDS ATTENTION]), else the most recently [DONE] one (the top-most, since the queue
+// drains bottom-to-top). Undefined when nothing has run yet. Points a header `!` at
+// the right window.
+export const frontierWindow = (s: Session): Window | undefined => {
+	const active = s.prompts.find((p) => p.desiredKind === 'EXECUTING' || p.desiredKind === 'ATTENTION')
+	const done = s.prompts.filter((p) => p.desiredKind === 'DONE').sort((a, b) => a.lineIdx - b.lineIdx)[0]
+	const item = active ?? done
+	return item ? (item.isCmd ? 'shell' : 'claude') : undefined
+}
+
 // Only the frontier item keeps a marker: strip every other [EXECUTING]/[DONE].
 const keepOnly = (s: Session, keep: Prompt | null) => {
 	for (const p of s.prompts) {
@@ -680,7 +691,7 @@ async function tick(rt: Rt) {
 		// A `!` "show now" header switches the client immediately (even mid-boot — the
 		// tmux session exists), independent of the queue; consumed by stripping the `!`.
 		if (s.showNow) {
-			actions.push(() => showSession(label))
+			actions.push(() => showSession(label, frontierWindow(s)))
 			s.showNowFired = true
 		}
 		// A `!` appended to an item's marker (e.g. `[NEEDS ATTENTION]!`) reveals that
