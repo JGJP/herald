@@ -487,6 +487,9 @@ async function showSession(label: string, window?: Window) {
 	log(`showing ${T(label)}${window ? ` (${window})` : ''}`)
 	if (DRY) return
 	const tm = $({ nothrow: true, quiet: true })
+	// Bring WezTerm (the terminal watching these sessions) to the foreground, so a
+	// `show`/`!` actually surfaces it even when another macOS app is focused. Best-effort.
+	await tm`osascript -e ${'tell application "WezTerm" to activate'}`
 	// Reveal the window the caller asked for (e.g. the shell for a `$command` show),
 	// so switching the client lands on it rather than the session's last-active window.
 	if (window) {
