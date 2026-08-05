@@ -631,15 +631,22 @@ async function tick(rt: Rt) {
 			actions.push(() => showSession(label))
 			s.showNowFired = true
 		}
-		if (rt[label]?.starting) {
-			if (Date.now() - rt[label].startedAt < READY_MS) continue
+		// Every session we see live for the first time is un-ready until it clears the
+		// grace below. A fresh spawn set this above (with a boot deadline); a reconnect
+		// or pre-existing session gets startedAt 0 so the boot grace is already
+		// satisfied and only pane-readiness remains — never dispatch straight away.
+		rt[label] ??= { starting: true, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: s.prompts.filter((p) => !p.isCmd && !p.isBarrier && !p.isShow).length }
+		if (rt[label].starting) {
+			if (Date.now() - rt[label].startedAt < READY_MS) continue // let claude boot
+			// A session with `$command`s isn't ready until its shell pane physically
+			// exists — a command sent to a not-yet-created pane is lost and leaves the
+			// item stuck [EXECUTING]. (Skipped in --dry-run, where panes aren't real.)
+			if (!DRY && s.prompts.some((p) => p.isCmd) && (await shellPane(label)) === null) continue
 			rt[label].starting = false
 		}
 		if (s.desiredSession && /NO DIR/i.test(s.desiredSession)) s.desiredSession = null
 		// Attention is a per-prompt marker now; strip any legacy session-level one.
 		clearAttention(s)
-
-		rt[label] ??= { starting: false, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: s.prompts.filter((p) => !p.isCmd && !p.isBarrier && !p.isShow).length }
 
 		// Capture what an in-flight command's completion would look like *before*
 		// planQueue mutates markers/timers, so we can clear its done-file afterwards.
