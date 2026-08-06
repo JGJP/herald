@@ -114,6 +114,25 @@ check('a fired marker `!` is stripped to the plain marker', applyOps(ba.lines, b
 const baCmd = parse('alpha\n\t$ deploy\n\t\t[EXECUTING]!\n')
 check('marker `!` on a command keeps the shell as its window', baCmd.sessions[0].prompts[0].isCmd === true && baCmd.sessions[0].prompts[0].showNow === true)
 
+// 4d. A space-separated trailing `!` on the item's own line ("reveal this item's
+// window now") sets a one-shot showNow without touching the item's text; unfired it
+// round-trips verbatim, and once fired buildOps strips the ` !` from that line.
+const inlineP = 'alpha\n\t: look at this !\n'
+const ip = parse(inlineP)
+check('inline `!` on a prompt sets showNow + strips it from the text', ip.sessions[0].prompts[0].showNow === true && ip.sessions[0].prompts[0].text === 'look at this' && ip.sessions[0].prompts[0].isCmd === false)
+check('an unfired inline `!` round-trips verbatim', applyOps(ip.lines, buildOps(ip.sessions)).join('\n') === inlineP)
+ip.sessions[0].prompts[0].showNowFired = true
+check('a fired inline `!` is stripped from the item line', applyOps(ip.lines, buildOps(ip.sessions)).join('\n') === 'alpha\n\t: look at this\n')
+// Firing coexists with a marker inserted the same tick (strip + insert on one line).
+ip.sessions[0].prompts[0].desiredKind = 'EXECUTING'
+check('a fired inline `!` strips and still gets its marker', applyOps(ip.lines, buildOps(ip.sessions)).join('\n') === 'alpha\n\t: look at this\n\t\t[EXECUTING]\n')
+// On a `$command` the reveal targets the shell window, and the command text is clean.
+const inlineC = parse('alpha\n\t$ gpo !\n')
+check('inline `!` on a command sets showNow, targets shell, keeps clean text', inlineC.sessions[0].prompts[0].isCmd === true && inlineC.sessions[0].prompts[0].showNow === true && inlineC.sessions[0].prompts[0].text === 'gpo')
+// Ordinary end punctuation (no separating space) stays text, not a reveal.
+const punct = parse('alpha\n\t: ship it!\n')
+check('a bare trailing `!` (no space) is text, not a reveal', punct.sessions[0].prompts[0].showNow === undefined && punct.sessions[0].prompts[0].text === 'ship it!')
+
 // 5. Minimal file with a single session.
 const single = 'alpha\n\tprompt: do a\n\tprompt: do b\n'
 const nb = parse(single)

@@ -96,11 +96,16 @@ interface Prompt {
 	// deletes the line — the request is consumed, not left as clutter.
 	isShow: boolean
 	fired: boolean
-	// A `!` appended to this item's status marker (e.g. `[NEEDS ATTENTION]!`) is a
-	// one-shot "reveal this item's window now" request, like `!` on a header. It fires
-	// once (`showNowFired`) and buildOps strips the `!`, consuming the request.
+	// A `!` appended to this item — either to its status marker (`[NEEDS ATTENTION]!`)
+	// or directly to its own line (`: do the thing !`, `$ run me !`) — is a one-shot
+	// "reveal this item's window now" request, like `!` on a header. It fires once
+	// (`showNowFired`) and buildOps strips the `!`, consuming the request.
 	showNow?: boolean
 	showNowFired?: boolean
+	// The `!` is on this item's own line (not its marker), so consuming it rewrites
+	// that line to `strippedLine` (the line without the trailing `!`).
+	showNowInline?: boolean
+	strippedLine?: string
 }
 interface Session {
 	label: string
@@ -165,29 +170,28 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 		if (!cur) continue
 		cur.lastChildIdx = i
 		const t = line.trim()
-		if (PROMPT_RE.test(t)) {
+		if (PROMPT_RE.test(t) || CMD_RE.test(t)) {
+			// A space-separated trailing `!` on a prompt or `$command` line means "reveal
+			// this item's window now" (the shell for a command, the claude pane
+			// otherwise), just like `!` on its marker. The space keeps ordinary end
+			// punctuation (`: ship it!`) as text; only `: ship it !` is a reveal. It's
+			// stripped from the line once consumed.
+			const isCmd = CMD_RE.test(t)
+			const bang = /\s!$/.test(t)
+			const body = bang ? t.slice(0, -1).trimEnd() : t
 			cur.prompts.push({
-				text: t.replace(PROMPT_RE, ''),
+				text: body.replace(isCmd ? CMD_RE : PROMPT_RE, ''),
 				lineIdx: i,
 				indent: tabs,
 				marker: null,
 				desiredKind: null,
-				isCmd: false,
+				isCmd,
 				isBarrier: false,
 				isShow: false,
 				fired: false,
-			})
-		} else if (CMD_RE.test(t)) {
-			cur.prompts.push({
-				text: t.replace(CMD_RE, ''),
-				lineIdx: i,
-				indent: tabs,
-				marker: null,
-				desiredKind: null,
-				isCmd: true,
-				isBarrier: false,
-				isShow: false,
-				fired: false,
+				showNow: bang || undefined,
+				showNowInline: bang || undefined,
+				strippedLine: bang ? tabs + body : undefined,
 			})
 		} else if (BARRIER_RE.test(t)) {
 			cur.prompts.push({
@@ -254,10 +258,13 @@ export function buildOps(sessions: Session[]): Op[] {
 				if (p.fired) ops.push({ pos: p.lineIdx, type: 'delete' })
 				continue
 			}
+			// A fired inline `!` sits on the item's own line, which the marker logic
+			// below never rewrites, so strip it here unconditionally.
+			if (p.showNowFired && p.showNowInline && p.strippedLine !== undefined) ops.push({ pos: p.lineIdx, type: 'replace', text: p.strippedLine })
 			const cur = p.marker?.kind ?? null
 			if (cur === p.desiredKind) {
 				// A fired marker `!` ("reveal now") is consumed by stripping the `!`.
-				if (p.showNowFired && p.marker) ops.push({ pos: p.marker.lineIdx, type: 'replace', text: `${p.indent}\t${MARKER[cur!]}` })
+				if (p.showNowFired && !p.showNowInline && p.marker) ops.push({ pos: p.marker.lineIdx, type: 'replace', text: `${p.indent}\t${MARKER[cur!]}` })
 				continue
 			}
 			if (p.marker) {

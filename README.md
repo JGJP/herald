@@ -167,6 +167,7 @@ moonbase-2
 | Add a `#` line | Halts the queue at that point until you delete the line (a human-action barrier) |
 | Add a `show` line | When the queue reaches it, switches your attached tmux client to this session, then deletes the line |
 | Add a `!` to a session header | Switches your attached tmux client to this session immediately (queue-independent), then strips the `!` |
+| Add a space-separated ` !` to any item line (or its marker) | Reveals that item's window immediately — the shell for a `$command`, the claude pane for a prompt — then strips the `!` |
 | Delete all prompts under a session | Sends `/clear` (session stays alive, idle) |
 | Delete the session name | Kills the tmux session |
 | Answer a `[NEEDS ATTENTION]` prompt | Type directly into the tmux; the marker flips back to `[EXECUTING]` on submit, then `[DONE]` when Claude finishes |
@@ -251,6 +252,20 @@ the queue, then strips itself — the "look at this one right now" button:
 moonbase!
 	: something just broke — look now
 ```
+
+A space-separated trailing `!` on **any item line** reveals *that item's* window
+right away: the shell window for a `$command`, the claude pane for a prompt. The `!`
+strips itself once shown. The separating space keeps ordinary end punctuation as text
+(`: ship it!` stays text; `: ship it !` is a reveal):
+
+```
+moonbase
+	: crunch through the migration
+	$ tail -f build.log !
+	: warm up the caches
+```
+
+(The same `!` also works appended to an item's status marker, e.g. `[EXECUTING]!`.)
 
 ### Clear a session without killing it
 
