@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-import { appendFileSync, chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -15,6 +15,9 @@ const bashrcPath = resolve(homedir(), '.bashrc')
 const zshHookPath = resolve(here, 'herald-zsh.sh')
 const zshrcPath = resolve(homedir(), '.zshrc')
 const settingsPath = resolve(homedir(), '.claude', 'settings.json')
+const sublimeSyntaxPath = resolve(here, 'herald.sublime-syntax')
+const sublimeUserDir = resolve(homedir(), '.config', 'sublime-text')
+const sublimeCopyPath = resolve(sublimeUserDir, 'herald.sublime-syntax')
 
 // Symlink the fish_postexec hook into fish's conf.d (fish auto-loads it). Repo
 // file stays the source of truth.
@@ -31,6 +34,25 @@ function installFishHook() {
 	if (entry) unlinkSync(fishLinkPath)
 	symlinkSync(fishHookPath, fishLinkPath)
 	console.log(`fish: linked hook ${fishLinkPath} -> ${fishHookPath}`)
+}
+
+// Copy the .herald syntax into Sublime's User package dir (Sublime auto-loads any
+// *.sublime-syntax there). Unlike the shell hooks we copy rather than symlink:
+// Sublime's package scanner doesn't follow symlinks, so a link is never loaded.
+// The repo file stays the source of truth — re-run setup to propagate edits.
+// Skips machines without a Sublime User dir.
+function installSublimeSyntax() {
+	if (!existsSync(sublimeUserDir)) {
+		console.log(`sublime: user dir not found (${sublimeUserDir}); skipping`)
+		return
+	}
+	const src = readFileSync(sublimeSyntaxPath)
+	if (existsSync(sublimeCopyPath) && readFileSync(sublimeCopyPath).equals(src)) {
+		console.log(`sublime: syntax already up to date (${sublimeCopyPath})`)
+		return
+	}
+	copyFileSync(sublimeSyntaxPath, sublimeCopyPath)
+	console.log(`sublime: installed syntax ${sublimeCopyPath}`)
 }
 
 // Idempotently source a shell hook from its rc file. Skips a shell whose rc file
@@ -75,6 +97,10 @@ void fire(async () => {
 	installFishHook()
 	installRcHook('bash', bashrcPath, bashHookPath)
 	installRcHook('zsh', zshrcPath, zshHookPath)
+
+	// 1c. Symlink the Sublime Text syntax for `.herald` files (skipped if Sublime
+	//     isn't set up on this machine).
+	installSublimeSyntax()
 
 	// 2. Merge Stop + Notification + UserPromptSubmit hooks into global settings.json
 	//    without clobbering existing hooks. UserPromptSubmit lets the controller flip

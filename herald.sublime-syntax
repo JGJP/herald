@@ -1,0 +1,66 @@
+%YAML 1.2
+---
+# Syntax for herald `.herald` control files. Grammar mirrors parse() in
+# herald.ts: column-0 lines are session headers, tab-indented lines are queue
+# items (prompt / $command / #barrier / show / [status marker]). Scopes map to
+# standard TextMate scopes so any color scheme lights them up for free.
+name: herald
+scope: source.herald
+version: 2
+
+file_extensions:
+  - herald
+  - .herald
+
+contexts:
+  main:
+    # Human-action barrier: an indented `#` line halts the queue (comment-like).
+    - match: '^\t+[ ]*((#)[^\n]*)$'
+      captures:
+        1: comment.line.number-sign.herald
+        2: punctuation.definition.comment.herald
+
+    # Prompt: `prompt:` or the `:` shorthand, then the prompt text (left plain).
+    - match: '^\t+[ ]*((?i:prompt)?:)[ ]*'
+      captures:
+        1: keyword.control.prompt.herald
+
+    # Command: `$` sigil runs in the shell window; the rest is the shell command.
+    - match: '^\t+[ ]*(\$)[ ]*(.*)$'
+      captures:
+        1: keyword.operator.command.herald
+        2: string.unquoted.command.herald
+
+    # Show item: a bare `show` (any case) or a bare `!` brings the session on screen.
+    - match: '^\t+[ ]*(?i:(show|!))[ ]*$'
+      captures:
+        1: keyword.control.show.herald
+
+    # Status markers (controller-written). Each state gets its own scope so the
+    # queue reads like a traffic light: executing = active, done = success,
+    # attention / session-error = alarm. A trailing `!` means "reveal now".
+    - match: '^\t+[ ]*((?i:\[[^\]]*executing[^\]]*\]))(!)?[ ]*$'
+      captures:
+        1: constant.language.executing.herald
+        2: keyword.operator.show-now.herald
+    - match: '^\t+[ ]*((?i:\[[^\]]*done[^\]]*\]))(!)?[ ]*$'
+      captures:
+        1: markup.inserted.done.herald
+        2: keyword.operator.show-now.herald
+    - match: '^\t+[ ]*((?i:\[[^\]]*attention[^\]]*\]))(!)?[ ]*$'
+      captures:
+        1: invalid.deprecated.attention.herald
+        2: keyword.operator.show-now.herald
+    # Anything else in brackets (e.g. [NO DIR …], [DUPLICATE]) is a session marker.
+    - match: '^\t+[ ]*(\[[^\n]*\])(!)?[ ]*$'
+      captures:
+        1: invalid.illegal.marker.herald
+        2: keyword.operator.show-now.herald
+
+    # Session header: a column-0 line (no leading tab). A trailing `!` means
+    # "switch to this session now". Freeform description lines under a header are
+    # tab-indented and match none of the above, so they stay plain.
+    - match: '^(?![\t\n])([^\n]*?)[ ]*(!?)[ ]*$'
+      captures:
+        1: entity.name.class.herald
+        2: keyword.control.show-now.herald
