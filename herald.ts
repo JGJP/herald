@@ -760,7 +760,12 @@ async function tick(rt: Rt) {
 	const aliases = loadAliases()
 	// Read + parse every `.herald` file. Each file's sessions carry line indices into
 	// that file's own `lines`, so markers are written back to the file they came from.
-	const controls: Control[] = controlFiles().map((path) => {
+	const files = controlFiles()
+	// No control files at all means "not configured yet", not "kill everything" — do
+	// nothing rather than tearing down every live session over a missing/renamed file.
+	// (An empty `.herald` file is the explicit way to drain all sessions.)
+	if (files.length === 0) return
+	const controls: Control[] = files.map((path) => {
 		const mtime = safeMtime(path)
 		const content = readFileSync(path, 'utf8')
 		const { lines, sessions } = parse(content, aliases)
