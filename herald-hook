@@ -4,6 +4,6 @@
 # Identity ($HERALD_LABEL) and $HERALD_STATE are inherited from the launching `claude`.
 # The event name is passed as $1; the controller reads the file's mtime for timing.
 [ -n "$HERALD_LABEL" ] || exit 0
-dir="${HERALD_STATE:-$HOME/_dev/bot-cmder/state}"
+dir="${HERALD_STATE:-$HOME/_dev/herald/state}"
 mkdir -p "$dir"
 { printf '{"event":"%s","raw":' "$1"; cat; printf '}\n'; } > "$dir/$HERALD_LABEL.json"

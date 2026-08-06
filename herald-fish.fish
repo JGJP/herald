@@ -7,6 +7,6 @@ function __herald_cmd_done --on-event fish_postexec
 	set -l st $status
 	test -n "$HERALD_SHELL" -a -n "$HERALD_LABEL"; or return
 	set -l dir $HERALD_STATE
-	test -n "$dir"; or set dir "$HOME/_dev/bot-cmder/state"
+	test -n "$dir"; or set dir "$HOME/_dev/herald/state"
 	echo $st >"$dir/$HERALD_LABEL.cmd"
 end
