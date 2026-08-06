@@ -41,15 +41,15 @@ pnpm start
 In another, put this in `herald-control` (a bare name resolves to `~/_dev/<name>`):
 
 ```
-superapp
+moonbase
 	: run the test suite and fix any failures
 ```
 
-The supervisor spawns tmux session `__superapp` running `claude` in
-`~/_dev/superapp`, sends the prompt, and marks it `[EXECUTING]`. Watch it work:
+The supervisor spawns tmux session `__moonbase` running `claude` in
+`~/_dev/moonbase`, sends the prompt, and marks it `[EXECUTING]`. Watch it work:
 
 ```sh
-tmux attach -t __superapp
+tmux attach -t __moonbase
 ```
 
 When Claude finishes, the line flips to `[DONE]`. Queue more work by adding lines
@@ -78,14 +78,14 @@ The whole file is the managed sessions region — keep your backlog and other
 notes in separate files so the supervisor's rewrites never touch them.
 
 ```
-superapp
+moonbase
 	brief description (freeform, ignored)
 		prompt: newest task, runs last
 		prompt: please add feature X, commit, push PR
 			[EXECUTING]
 		prompt: please start working on X
 			[DONE]
-superapp-2
+moonbase-2
 	brief description (freeform, ignored)
 		prompt: investigate the flaky test
 			[NEEDS ATTENTION]
@@ -95,11 +95,11 @@ superapp-2
   - an **alias** listed in `herald-aliases.yaml` → its mapped path, tmux session
     `__<alias>`; or
   - a **path** (`/abs`, `~/…`, or anything containing `/`) → that dir, with the
-    label/tmux name taken from its basename (e.g. `~/_dev/_startale/superapp` →
-    `__superapp`). Use this to point sessions anywhere on disk; or
+    label/tmux name taken from its basename (e.g. `~/projects/moonbase` →
+    `__moonbase`). Use this to point sessions anywhere on disk; or
   - a **bare name** → dir `~/_dev/<name>`, tmux session `__<name>`.
 
-  A trailing `!` on the header (e.g. `superapp!`) means **show it now**: the
+  A trailing `!` on the header (e.g. `moonbase!`) means **show it now**: the
   supervisor switches your attached tmux client to the session immediately —
   regardless of the queue — then strips the `!` (a one-shot request). The name/path
   resolves from the header without the `!`. This is the eager cousin of a queued
@@ -169,7 +169,7 @@ goes on top**. Indentation is with **tabs**.
 ### Queue several prompts (they run oldest-first)
 
 ```
-superapp
+moonbase
 	: write a design doc for the new billing flow
 	: implement it and add tests
 	: open a PR
@@ -187,7 +187,7 @@ command actually exits, so you can interleave them with prompts and trust the
 ordering:
 
 ```
-superapp
+moonbase
 	$ pnpm test
 	: fix whatever the tests flagged
 	$ git add -A && git commit -m "wip"
@@ -201,7 +201,7 @@ and intentionally holds the queue — put it last (top) if you want it to linger
 ### Pause for a manual step (`#` barrier)
 
 ```
-superapp
+moonbase
 	: deploy to staging
 	# rotate the staging secret, then delete this line
 	: prepare the release branch
@@ -218,7 +218,7 @@ A queued `show` line switches your attached tmux client when the drain reaches i
 (ordered like everything else). A bare `!` line is shorthand for `show`:
 
 ```
-superapp
+moonbase
 	: crunch through the migration
 	show
 	: warm up the caches
@@ -229,7 +229,7 @@ A trailing `!` on the **header** instead switches **immediately**, regardless of
 the queue, then strips itself — the "look at this one right now" button:
 
 ```
-superapp!
+moonbase!
 	: something just broke — look now
 ```
 
@@ -238,7 +238,7 @@ superapp!
 Delete all the prompt/command lines under a header but keep the header:
 
 ```
-superapp
+moonbase
 ```
 
 The supervisor sends `/clear` to the claude pane; the tmux session stays alive and
@@ -250,12 +250,12 @@ session.
 When Claude stops mid-task to ask something, its line shows `[NEEDS ATTENTION]`:
 
 ```
-superapp
+moonbase
 	: refactor the auth module
 		[NEEDS ATTENTION]
 ```
 
-Attach (`tmux attach -t __superapp`) and type your answer into the claude pane.
+Attach (`tmux attach -t __moonbase`) and type your answer into the claude pane.
 On submit the marker flips back to `[EXECUTING]`, then `[DONE]` when it finishes.
 
 ### Re-run a finished queue
@@ -266,7 +266,7 @@ the whole queue re-runs from the bottom.
 ### Several sessions at once
 
 ```
-superapp
+moonbase
 	: run the test suite
 		[EXECUTING]
 infra
@@ -313,7 +313,7 @@ short label instead of a full path. `~` expands to your home dir; the label
 becomes the tmux session name. See `herald-aliases.example.yaml`.
 
 ```yaml
-superapp: ~/_dev/_startale/superapp
+moonbase: ~/projects/moonbase
 infra: ~/work/infra-monorepo
 ```
 
