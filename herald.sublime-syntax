@@ -20,13 +20,19 @@ contexts:
         1: comment.line.number-sign.herald
         2: punctuation.definition.comment.herald
 
-    # Prompt: `prompt:` or the `:` shorthand, then the prompt text (left plain).
-    - match: '^\t+[ ]*((?i:prompt)?:)[ ]*'
+    # Prompt: `prompt:` or the `:` shorthand. The whole line is one prompt scope
+    # (sigil + text) so it can be styled as a single unit.
+    - match: '^\t+[ ]*((?i:prompt)?:)'
       captures:
         1: keyword.control.prompt.herald
+      push:
+        - meta_content_scope: meta.prompt.herald
+        - match: $\n?
+          pop: true
 
     # Command: `$` sigil runs in the shell window; the rest is the shell command.
-    - match: '^\t+[ ]*(\$)[ ]*(.*)$'
+    # Sigil and text share a contiguous region so a background color has no gaps.
+    - match: '^\t+[ ]*(\$)(.*)$'
       captures:
         1: keyword.operator.command.herald
         2: string.unquoted.command.herald
