@@ -369,7 +369,7 @@ async function listTmux(): Promise<Set<string>> {
 // Each session has two windows: window "claude" (controller-driven) and window
 // "shell" (a free shell for the user). We tag the claude pane with a pane-scoped
 // user option (@herald), which — unlike pane titles — the running program
-// (fish/claude) can't clobber, and which survives focus changes, non-zero
+// (shell/claude) can't clobber, and which survives focus changes, non-zero
 // base-index, and controller restart. -s searches all windows in the session.
 async function claudePane(label: string): Promise<string> {
 	const r = await $({
@@ -423,14 +423,14 @@ async function typeInto(pane: string, text: string, vimInsert = false) {
 }
 
 // `vimInsert` prep only makes sense for a running claude (prompts, /clear); the
-// launch line below is typed into the fish shell before claude starts.
+// launch line below is typed into the shell before claude starts.
 async function sendLine(label: string, text: string, vimInsert = false) {
 	log(`${DRY ? '[dry] ' : ''}send ${T(label)}: ${JSON.stringify(text)}`)
 	if (DRY) return
 	await typeInto(await claudePane(label), text, vimInsert)
 }
 
-// Run a `$command` line in the session's shell window. The fish_postexec hook in
+// Run a `$command` line in the session's shell window. The per-shell hook in
 // that window writes the command's exit status to its done-file *after* it exits,
 // so the controller can tell when the command has actually finished (not just sent).
 async function sendCmd(label: string, text: string) {
@@ -441,13 +441,13 @@ async function sendCmd(label: string, text: string) {
 		log(`no shell pane for ${T(label)}, skipping command`)
 		return
 	}
-	// The command's exit status is written to its done-file by the fish_postexec
-	// hook in the shell window (see herald-fish.fish), so we type it verbatim.
+	// The command's exit status is written to its done-file by the per-shell hook
+	// in the shell window (see herald-{fish,bash,zsh}.*), so we type it verbatim.
 	await typeInto(pane, text)
 }
 
 // Open the session's shell window: a free shell for the user and where `$command`
-// lines run. HERALD_SHELL marks it as the pane whose fish_postexec hook writes command
+// lines run. HERALD_SHELL marks it as the pane whose per-shell hook writes command
 // done-files; HERALD_LABEL/HERALD_STATE are set here too (not just at the session level)
 // so a shell recreated on an env-less session still reports completion.
 async function makeShellWindow(label: string, dir: string) {
@@ -469,7 +469,7 @@ async function doSpawn(label: string, dir: string) {
 	const tm = $({ nothrow: true, quiet: true })
 	// HERALD_LABEL/HERALD_STATE are set on the whole session (claude inherits them for
 	// its Stop/Notification hook); HERALD_SHELL marks only the shell window, where the
-	// fish_postexec hook writes command done-files (see herald-fish.fish).
+	// per-shell hook writes command done-files (see herald-{fish,bash,zsh}.*).
 	await tm`tmux new-session -d -s ${T(label)} -n claude -c ${dir} -e ${`HERALD_LABEL=${label}`} -e ${`HERALD_STATE=${STATE}`}`
 	// Tag the claude pane, then open a second window as a free shell for the user.
 	await tm`tmux set-option -p -t ${T(label)} @herald claude`

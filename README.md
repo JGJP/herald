@@ -12,15 +12,24 @@ second.
 
 ```sh
 pnpm install
-pnpm setup   # makes herald-hook executable, creates state/, symlinks the fish
-             # completion hook, and installs the Stop + Notification +
+pnpm setup   # makes herald-hook executable, creates state/, installs a
+             # command-completion hook for your shell (fish, zsh, and bash are
+             # supported), and installs the Stop + Notification +
              # UserPromptSubmit hooks into ~/.claude/settings.json
 ```
 
 `setup` merges its hooks into your **global** `~/.claude/settings.json` (backing
 it up to `settings.json.herald-bak`) and is idempotent — re-run it any time (e.g.
-after moving the repo). All hooks are guarded by `$HERALD_LABEL`, so they are a
-no-op for your normal Claude sessions and only fire for herald-launched ones.
+after moving the repo). The Claude hooks are guarded by `$HERALD_LABEL` and the
+shell hooks by `$HERALD_SHELL`, so both are a no-op for your normal Claude sessions
+and shells and only fire for herald-launched ones.
+
+The **command-completion hook** reports when a `$command` has finished. fish
+auto-loads it from `~/.config/fish/conf.d`; bash and zsh get a `source` line
+appended to `~/.bashrc` / `~/.zshrc` (each backed up once to `<rc>.herald-bak`).
+Only the shell whose config exists is touched, and each hook self-activates just
+in its own shell, so whichever shell the session's window runs is handled
+automatically.
 
 ## Run
 
@@ -116,8 +125,8 @@ moonbase-2
   `[EXECUTING]`.
 - `$command` lines run **once** in the session's **shell window** (the 2nd window,
   not the claude pane). A command is marked `[EXECUTING]` when dispatched and only
-  advances to `[DONE]` once it has actually **exited** (the controller appends
-  `; echo $status > state/<label>.cmd` and waits for that done-file). A command
+  advances to `[DONE]` once it has actually **exited** (a per-shell hook writes its
+  exit status to `state/<label>.cmd` and the controller waits for that done-file). A command
   that never exits (e.g. a server) stays `[EXECUTING]` and blocks the rest of the
   queue — by design. So e.g. `$git push` placed above `: make the change` runs only
   after that prompt is done.
