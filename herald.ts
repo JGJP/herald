@@ -446,6 +446,23 @@ async function sendCmd(label: string, text: string) {
 	await typeInto(pane, text)
 }
 
+// Open the session's shell window: a free shell for the user and where `$command`
+// lines run. HERALD_SHELL marks it as the pane whose fish_postexec hook writes command
+// done-files; HERALD_LABEL/HERALD_STATE are set here too (not just at the session level)
+// so a shell recreated on an env-less session still reports completion.
+async function makeShellWindow(label: string, dir: string) {
+	const tm = $({ nothrow: true, quiet: true })
+	await tm`tmux new-window -t ${T(label)} -n shell -c ${dir} -e HERALD_SHELL=1 -e ${`HERALD_LABEL=${label}`} -e ${`HERALD_STATE=${STATE}`}`
+	await tm`tmux set-option -p -t ${T(label)} @herald shell`
+}
+
+// The @herald roles present on a session's panes (e.g. {claude, shell}). A complete
+// session has both; anything missing means a tmux step during spawn silently failed.
+async function taggedRoles(label: string): Promise<Set<string>> {
+	const r = await $({ nothrow: true, quiet: true })`tmux list-panes -s -t ${T(label)} -F ${'#{@herald}'}`
+	return new Set(r.stdout.split('\n').map((x) => x.trim()).filter(Boolean))
+}
+
 async function doSpawn(label: string, dir: string) {
 	log(`spawning ${T(label)} in ${dir}`)
 	if (DRY) return
@@ -456,12 +473,24 @@ async function doSpawn(label: string, dir: string) {
 	await tm`tmux new-session -d -s ${T(label)} -n claude -c ${dir} -e ${`HERALD_LABEL=${label}`} -e ${`HERALD_STATE=${STATE}`}`
 	// Tag the claude pane, then open a second window as a free shell for the user.
 	await tm`tmux set-option -p -t ${T(label)} @herald claude`
-	await tm`tmux new-window -t ${T(label)} -n shell -c ${dir} -e HERALD_SHELL=1`
-	await tm`tmux set-option -p -t ${T(label)} @herald shell`
+	await makeShellWindow(label, dir)
 	await sleep(300)
 	await sendLine(label, 'claude')
 	// Leave the claude window focused so an attach shows it first.
 	await tm`tmux select-window -t ${await claudePane(label)}`
+	// The tmux steps above run with nothrow; a partial spawn leaves a half-formed
+	// session that blocks command dispatch. Warn loudly (the readiness gate repairs it).
+	const roles = await taggedRoles(label)
+	if (!roles.has('claude') || !roles.has('shell')) log(`WARN incomplete spawn of ${T(label)} (tagged: ${[...roles].join(',') || 'none'})`)
+}
+
+// Recreate a missing shell window on a live session (e.g. after a partial spawn),
+// so command dispatch isn't blocked forever waiting for a shell pane.
+async function repairShell(label: string, dir: string) {
+	log(`repairing ${T(label)}: recreating missing shell window`)
+	if (DRY) return
+	await makeShellWindow(label, dir)
+	await $({ nothrow: true, quiet: true })`tmux select-window -t ${await claudePane(label)}`
 }
 
 async function doKill(label: string, switchTo: string | null) {
@@ -717,7 +746,13 @@ async function tick(rt: Rt) {
 			// A session with `$command`s isn't ready until its shell pane physically
 			// exists — a command sent to a not-yet-created pane is lost and leaves the
 			// item stuck [EXECUTING]. (Skipped in --dry-run, where panes aren't real.)
-			if (!DRY && s.prompts.some((p) => p.isCmd) && (await shellPane(label)) === null) continue
+			if (!DRY && s.prompts.some((p) => p.isCmd) && (await shellPane(label)) === null) {
+				// Past the boot grace with no shell pane means a partial spawn, not a
+				// slow boot: recreate the shell window (self-heal) instead of blocking
+				// forever. The `null` guard prevents a duplicate window on retry.
+				actions.push(() => repairShell(label, dir))
+				continue
+			}
 			rt[label].starting = false
 		}
 		if (s.desiredSession && /NO DIR/i.test(s.desiredSession)) s.desiredSession = null
