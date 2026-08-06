@@ -11,22 +11,55 @@ second.
 ## Setup (once)
 
 ```sh
+pnpm bootstrap   # = pnpm install && pnpm setup
+```
+
+Or the two steps separately:
+
+```sh
 pnpm install
-pnpm setup   # makes herald-hook executable, creates state/, and installs the
-             # Stop + Notification + UserPromptSubmit hooks into ~/.claude/settings.json
+pnpm setup   # makes herald-hook executable, creates state/, symlinks the fish
+             # completion hook, and installs the Stop + Notification +
+             # UserPromptSubmit hooks into ~/.claude/settings.json
 ```
 
 `setup` merges its hooks into your **global** `~/.claude/settings.json` (backing
-it up to `settings.json.herald-bak`). All are guarded by `$HERALD_LABEL`, so they
-are a no-op for your normal Claude sessions and only fire for herald-launched ones.
+it up to `settings.json.herald-bak`) and is idempotent — re-run it any time (e.g.
+after moving the repo). All hooks are guarded by `$HERALD_LABEL`, so they are a
+no-op for your normal Claude sessions and only fire for herald-launched ones.
 
 ## Run
 
 ```sh
 pnpm start           # watch ./herald-control and reconcile every second
 pnpm start --dry-run # log intended tmux actions / rewrites without doing them
-pnpm herald           # edit herald-control in a live Neovim (see below)
+pnpm herald          # edit herald-control in a live Neovim (see below)
 ```
+
+## Quickstart
+
+In one terminal, start the supervisor:
+
+```sh
+pnpm start
+```
+
+In another, put this in `herald-control` (a bare name resolves to `~/_dev/<name>`):
+
+```
+superapp
+	: run the test suite and fix any failures
+```
+
+The supervisor spawns tmux session `__superapp` running `claude` in
+`~/_dev/superapp`, sends the prompt, and marks it `[EXECUTING]`. Watch it work:
+
+```sh
+tmux attach -t __superapp
+```
+
+When Claude finishes, the line flips to `[DONE]`. Queue more work by adding lines
+**above** it (newest on top) — see the examples below.
 
 ## Editing live (`pnpm herald`)
 
@@ -132,6 +165,141 @@ prompts always target it regardless of which window/pane is focused.
 
 Attach to a session with `tmux attach -t __<label>` (switch windows with your
 tmux prefix + `n`/`p`).
+
+## Usage examples
+
+All of these are just text you put in `herald-control` while `pnpm start` runs.
+Remember the queue drains **bottom-to-top**, one item at a time, so **new work
+goes on top**. Indentation is with **tabs**.
+
+### Queue several prompts (they run oldest-first)
+
+```
+superapp
+	: write a design doc for the new billing flow
+	: implement it and add tests
+	: open a PR
+		[EXECUTING]
+```
+
+The bottom item runs first; each next one starts only when the item below it is
+`[DONE]`. Here "open a PR" is the active frontier — the two above it are still
+pending and carry no marker.
+
+### Mix prompts and shell commands
+
+`$command` lines run in the session's **shell window** and only advance once the
+command actually exits, so you can interleave them with prompts and trust the
+ordering:
+
+```
+superapp
+	$ pnpm test
+	: fix whatever the tests flagged
+	$ git add -A && git commit -m "wip"
+		[EXECUTING]
+```
+
+Reading bottom-up: commit the current state, let Claude fix the tests, then run
+the suite again. A long-running `$command` (e.g. `$ pnpm dev`) stays `[EXECUTING]`
+and intentionally holds the queue — put it last (top) if you want it to linger.
+
+### Pause for a manual step (`#` barrier)
+
+```
+superapp
+	: deploy to staging
+	# rotate the staging secret, then delete this line
+	: prepare the release branch
+		[DONE]
+```
+
+The drain finishes "prepare the release branch", then **stops** at the `#` line —
+nothing above runs until **you delete it**. Use it wherever a human must act
+before Claude continues.
+
+### Bring a session on screen
+
+A queued `show` line switches your attached tmux client when the drain reaches it
+(ordered like everything else). A bare `!` line is shorthand for `show`:
+
+```
+superapp
+	: crunch through the migration
+	show
+	: warm up the caches
+		[DONE]
+```
+
+A trailing `!` on the **header** instead switches **immediately**, regardless of
+the queue, then strips itself — the "look at this one right now" button:
+
+```
+superapp!
+	: something just broke — look now
+```
+
+### Clear a session without killing it
+
+Delete all the prompt/command lines under a header but keep the header:
+
+```
+superapp
+```
+
+The supervisor sends `/clear` to the claude pane; the tmux session stays alive and
+idle, ready for the next prompt. Delete the header line itself to **kill** the
+session.
+
+### Answer a blocked task
+
+When Claude stops mid-task to ask something, its line shows `[NEEDS ATTENTION]`:
+
+```
+superapp
+	: refactor the auth module
+		[NEEDS ATTENTION]
+```
+
+Attach (`tmux attach -t __superapp`) and type your answer into the claude pane.
+On submit the marker flips back to `[EXECUTING]`, then `[DONE]` when it finishes.
+
+### Re-run a finished queue
+
+Only the final `[DONE]` remains once a queue drains. Delete that marker line and
+the whole queue re-runs from the bottom.
+
+### Several sessions at once
+
+```
+superapp
+	: run the test suite
+		[EXECUTING]
+infra
+	$ terraform plan
+		[EXECUTING]
+scratch
+	: prototype the new parser
+		[DONE]
+```
+
+Each header is an independent session with its own queue; they run in parallel.
+`infra` and `scratch` resolve to `~/_dev/infra` and `~/_dev/scratch`; give any of
+them a full path or an alias instead (below).
+
+### Point a session anywhere / use an alias
+
+```
+~/work/infra-monorepo
+	: bump the node version
+/tmp/experiment
+	: throwaway spike
+infra
+	: same repo as above, via alias
+```
+
+A header containing `/` is used as a path (tmux name = its basename); a bare name
+that matches `herald-aliases.yaml` uses the mapped path. See the aliases section.
 
 ## Notes
 
