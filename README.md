@@ -1,12 +1,16 @@
 # herald
 
 Run many interactive Claude Code instances in tmux and control/observe them all
-through a single plain-text file, `herald-control`.
+through plain-text `.herald` files.
 
-The file is both a **dashboard** (Claude activity is written back as status
+Each file is both a **dashboard** (Claude activity is written back as status
 markers) and a **control surface** (edits start/stop/clear sessions and queue
-prompts). A `tsx` supervisor loop reconciles the file against live tmux every
-second.
+prompts). A `tsx` supervisor loop merges every `*.herald` file in the repo dir into
+one logical control and reconciles it against live tmux every second. Split your
+work across as many `.herald` files as you like (e.g. `work.herald`,
+`personal.herald`) — they're combined into one dashboard and each is rewritten in
+place. A session (tmux label) may only be driven by one file; if two files declare
+the same label, the first wins and the later one is marked `[DUPLICATE]`.
 
 ## Setup (once)
 
@@ -34,9 +38,10 @@ automatically.
 ## Run
 
 ```sh
-pnpm start           # watch ./herald-control and reconcile every second
-pnpm start --dry-run # log intended tmux actions / rewrites without doing them
-pnpm herald          # edit herald-control in a live Neovim (see below)
+pnpm start            # merge every ./*.herald file and reconcile each second
+pnpm start --dry-run  # log intended tmux actions / rewrites without doing them
+pnpm herald           # edit .herald in a live Neovim (see below)
+pnpm herald work.herald  # …or edit a specific control file
 ```
 
 ## Quickstart
@@ -47,7 +52,7 @@ In one terminal, start the supervisor:
 pnpm start
 ```
 
-In another, put this in `herald-control` (a bare name resolves to `~/_dev/<name>`):
+In another, put this in a `.herald` file (a bare name resolves to `~/_dev/<name>`):
 
 ```
 moonbase
@@ -66,8 +71,9 @@ When Claude finishes, the line flips to `[DONE]`. Queue more work by adding line
 
 ## Editing live (`pnpm herald`)
 
-`pnpm herald` opens `herald-control` in **real Neovim** (your own config and
-keybindings) while the supervisor keeps writing to the same file. A small sidecar
+`pnpm herald [file]` opens a `.herald` control file (default `.herald`) in **real
+Neovim** (your own config and keybindings) while the supervisor keeps writing to
+the same file. Pass a filename to edit a specific one. A small sidecar
 attached over nvim's RPC socket folds the controller's out-of-band writes (marker
 updates, drained `show` lines, …) into your buffer **without disturbing what you're
 typing**:
@@ -81,10 +87,14 @@ typing**:
 Save with `:w` as usual — the display and file are then in sync. Requires `nvim` on
 your `PATH`; respects `HERALD_FILE`. Runs alongside `pnpm start` (that's the point).
 
-## The `herald-control` file
+## The `.herald` files
 
-The whole file is the managed sessions region — keep your backlog and other
-notes in separate files so the supervisor's rewrites never touch them.
+The supervisor picks up **every** `*.herald` file in the repo dir and merges them
+into one control (sessions from all files combined, alphabetical by filename). Each
+file is written back in place, so you can split work across several — one per
+context — and still watch them as a single dashboard. The whole of each file is the
+managed sessions region; keep your backlog and other notes elsewhere so the
+supervisor's rewrites never touch them.
 
 ```
 moonbase
@@ -171,7 +181,7 @@ tmux prefix + `n`/`p`).
 
 ## Usage examples
 
-All of these are just text you put in `herald-control` while `pnpm start` runs.
+All of these are just text you put in a `.herald` file while `pnpm start` runs.
 Remember the queue drains **bottom-to-top**, one item at a time, so **new work
 goes on top**. Indentation is with **tabs**.
 
@@ -312,12 +322,14 @@ that matches `herald-aliases.yaml` uses the mapped path. See the aliases section
   hooks inherit these and write `state/<label>.json`, which the loop reads (using
   the file's mtime as the event time).
 - Missing `~/_dev/<label>` ⇒ the session is annotated `[NO DIR …]` and skipped.
-- The loop is the sole writer of markers; it computes changes, writes the file,
-  then runs tmux actions, and defers if you edit `herald-control` mid-tick.
+- The loop is the sole writer of markers; it computes changes, writes each file,
+  then runs tmux actions, and defers if you edit any `.herald` file mid-tick.
+- A tmux label is driven by one file only: if two `.herald` files declare the same
+  session, the first (alphabetical) wins and the later one is marked `[DUPLICATE]`.
 
 ## Repo aliases (`herald-aliases.yaml`)
 
-Optional. A YAML map of `label: path`, so a header in `herald-control` can be a
+Optional. A YAML map of `label: path`, so a header in a `.herald` file can be a
 short label instead of a full path. `~` expands to your home dir; the label
 becomes the tmux session name. See `herald-aliases.example.yaml`.
 
@@ -331,7 +343,8 @@ header that isn't a listed alias falls back to the path / bare-name rules above.
 
 ## Env overrides (mainly for testing)
 
-- `HERALD_FILE` — watch a different control file instead of `./herald-control`.
+- `HERALD_DIR` — scan a different directory for `*.herald` files instead of the repo dir.
+- `HERALD_FILE` — single-file mode: watch exactly this one file (ignores the `*.herald` scan).
 - `HERALD_ALIASES` — read aliases from a different file instead of `./herald-aliases.yaml`.
 - `HERALD_READY_MS` — boot grace before the first prompt is sent (default 6000).
 

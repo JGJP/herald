@@ -1,5 +1,6 @@
 node_modules
 state
 herald-control
+*.herald
 herald-actions
 herald-aliases.yaml

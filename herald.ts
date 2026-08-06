@@ -2,6 +2,7 @@
 import {
 	existsSync,
 	mkdirSync,
+	readdirSync,
 	readFileSync,
 	renameSync,
 	statSync,
@@ -15,9 +16,15 @@ import { fire } from '@jgjp/fire'
 import { $, sleep, YAML } from 'zx'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const HERALD = process.env.HERALD_FILE ? resolve(process.env.HERALD_FILE) : join(HERE, 'herald-control')
-// Optional YAML file of `label: /path/to/repo` aliases, so a header in
-// herald-control can be a short label instead of a full path.
+// The controller merges every `*.herald` file in the control dir (default: the repo
+// dir) into one logical control — each file is an independent slice of sessions and
+// is rewritten in place. `HERALD_DIR` overrides the dir; `HERALD_FILE` forces
+// single-file mode (one explicit file, mainly for tests/one-offs).
+const CONTROL_DIR = process.env.HERALD_DIR ? resolve(process.env.HERALD_DIR) : HERE
+const SINGLE_FILE = process.env.HERALD_FILE ? resolve(process.env.HERALD_FILE) : null
+const CONTROL_EXT = '.herald'
+// Optional YAML file of `label: /path/to/repo` aliases, so a header in a `.herald`
+// file can be a short label instead of a full path.
 const ALIASES_FILE = process.env.HERALD_ALIASES ? resolve(process.env.HERALD_ALIASES) : join(HERE, 'herald-aliases.yaml')
 const STATE = join(HERE, 'state')
 const RT_PATH = join(STATE, 'controller.json')
@@ -285,6 +292,27 @@ export function applyOps(lines: string[], ops: Op[]): string[] {
 	return out
 }
 
+// Merge the per-file session lists (in file order) into one global list. tmux labels
+// are global, so the first file to claim a label wins; a later file's duplicate is
+// annotated `[DUPLICATE]` and dropped from the returned list — its own file still
+// rewrites it in place (via buildOps on that file's sessions), so the marker shows up.
+export function mergeSessions(perFile: Session[][]): { sessions: Session[]; labels: Set<string> } {
+	const labels = new Set<string>()
+	const sessions: Session[] = []
+	for (const group of perFile) {
+		for (const s of group) {
+			if (RESERVED.has(s.label)) continue
+			if (labels.has(s.label)) {
+				s.desiredSession = '[DUPLICATE]'
+				continue
+			}
+			labels.add(s.label)
+			sessions.push(s)
+		}
+	}
+	return { sessions, labels }
+}
+
 // --------------------------------------------------------------- runtime state
 
 interface RtEntry {
@@ -537,14 +565,37 @@ async function showSession(label: string, window?: Window) {
 	}
 }
 
-const atomicWrite = (content: string) => {
+const atomicWrite = (path: string, content: string) => {
 	if (DRY) {
-		log('[dry] herald-control would be rewritten')
+		log(`[dry] ${basename(path)} would be rewritten`)
 		return
 	}
-	const tmp = `${HERALD}.tmp`
+	const tmp = `${path}.tmp`
 	writeFileSync(tmp, content)
-	renameSync(tmp, HERALD)
+	renameSync(tmp, path)
+}
+
+// Every `*.herald` file in the control dir, sorted for a stable merge order. In
+// single-file mode (HERALD_FILE) it's just that one file, if it exists.
+function controlFiles(): string[] {
+	if (SINGLE_FILE) return existsSync(SINGLE_FILE) ? [SINGLE_FILE] : []
+	let names: string[]
+	try {
+		names = readdirSync(CONTROL_DIR)
+	} catch {
+		return []
+	}
+	return names
+		.filter((n) => n.endsWith(CONTROL_EXT))
+		.sort()
+		.map((n) => join(CONTROL_DIR, n))
+		.filter((p) => {
+			try {
+				return statSync(p).isFile()
+			} catch {
+				return false
+			}
+		})
 }
 
 // -------------------------------------------------------------- reconcile tick
@@ -696,12 +747,28 @@ export function planQueue(s: Session, rt: RtEntry, io: PlanIO): Dispatch[] {
 	return out
 }
 
+interface Control {
+	path: string
+	content: string
+	lines: string[]
+	sessions: Session[]
+	mtime: number
+}
+
 async function tick(rt: Rt) {
 	const live = await listTmux()
-	const mtimeA = safeMtime(HERALD)
-	const content = readFileSync(HERALD, 'utf8')
-	const { lines, sessions } = parse(content, loadAliases())
-	const modelLabels = new Set(sessions.map((s) => s.label))
+	const aliases = loadAliases()
+	// Read + parse every `.herald` file. Each file's sessions carry line indices into
+	// that file's own `lines`, so markers are written back to the file they came from.
+	const controls: Control[] = controlFiles().map((path) => {
+		const mtime = safeMtime(path)
+		const content = readFileSync(path, 'utf8')
+		const { lines, sessions } = parse(content, aliases)
+		return { path, content, lines, sessions, mtime }
+	})
+	// Merge into one global session list; the first file (alphabetical) to claim a
+	// tmux label wins, later duplicates are skipped so only one driver owns each session.
+	const { sessions, labels: modelLabels } = mergeSessions(controls.map((c) => c.sessions))
 	const actions: (() => Promise<void>)[] = []
 
 	for (const s of sessions) {
@@ -787,14 +854,19 @@ async function tick(rt: Rt) {
 		delete rt[label]
 	}
 
-	// If the user edited herald-control while we computed, defer: skip write AND actions
-	// so nothing (e.g. a queued prompt) fires against a stale view.
-	if (safeMtime(HERALD) !== mtimeA) {
-		log('herald-control changed mid-tick, deferring')
-		return
+	// If the user edited any `.herald` file while we computed, defer: skip writes AND
+	// actions so nothing (e.g. a queued prompt) fires against a stale view.
+	for (const c of controls) {
+		if (safeMtime(c.path) !== c.mtime) {
+			log(`${basename(c.path)} changed mid-tick, deferring`)
+			return
+		}
 	}
-	const newContent = applyOps(lines, buildOps(sessions)).join('\n')
-	if (newContent !== content) atomicWrite(newContent)
+	// Rewrite each file in place — only the ones whose markers actually changed.
+	for (const c of controls) {
+		const newContent = applyOps(c.lines, buildOps(c.sessions)).join('\n')
+		if (newContent !== c.content) atomicWrite(c.path, newContent)
+	}
 	for (const a of actions) await a()
 	saveRt(rt)
 }
@@ -851,18 +923,18 @@ const isMain = (() => {
 if (isMain)
 	void fire(async () => {
 		$.verbose = false
-		if (!existsSync(HERALD)) throw new Error(`control file not found: ${HERALD}`)
 		if (!existsSync(STATE)) mkdirSync(STATE, { recursive: true })
 		const rt = loadRt()
+		const found = controlFiles()
 		if (DRY) {
 			// One-shot preview: show what a single tick would do, then exit.
-			log(`herald dry-run against ${HERALD}`)
+			log(`herald dry-run against ${found.length ? found.map((f) => basename(f)).join(', ') : `(no ${CONTROL_EXT} files found)`}`)
 			await tick(rt)
 			log('dry-run complete (no changes made)')
 			return
 		}
 		acquireLock()
-		log(`herald watching ${HERALD}`)
+		log(`herald watching ${SINGLE_FILE ?? `${CONTROL_DIR}/*${CONTROL_EXT}`} (${found.length} file(s))`)
 		while (true) {
 			await tick(rt)
 			await sleep(TICK_MS)
