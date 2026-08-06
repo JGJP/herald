@@ -11,12 +11,6 @@ second.
 ## Setup (once)
 
 ```sh
-pnpm bootstrap   # = pnpm install && pnpm setup
-```
-
-Or the two steps separately:
-
-```sh
 pnpm install
 pnpm setup   # makes herald-hook executable, creates state/, symlinks the fish
              # completion hook, and installs the Stop + Notification +
