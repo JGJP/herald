@@ -15,10 +15,10 @@ import { fire } from '@jgjp/fire'
 import { $, sleep, YAML } from 'zx'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const CMDER = process.env.CMDER_FILE ? resolve(process.env.CMDER_FILE) : join(HERE, 'cmder-control')
+const HERALD = process.env.HERALD_FILE ? resolve(process.env.HERALD_FILE) : join(HERE, 'herald-control')
 // Optional YAML file of `label: /path/to/repo` aliases, so a header in
-// cmder-control can be a short label instead of a full path.
-const ALIASES_FILE = process.env.CMDER_ALIASES ? resolve(process.env.CMDER_ALIASES) : join(HERE, 'cmder-aliases.yaml')
+// herald-control can be a short label instead of a full path.
+const ALIASES_FILE = process.env.HERALD_ALIASES ? resolve(process.env.HERALD_ALIASES) : join(HERE, 'herald-aliases.yaml')
 const STATE = join(HERE, 'state')
 const RT_PATH = join(STATE, 'controller.json')
 const LOCK = join(STATE, 'supervisor.lock')
@@ -27,7 +27,7 @@ const DEV_DIR = join(homedir(), '_dev')
 const RESERVED = new Set<string>([])
 const TICK_MS = 1000
 // Grace period for a freshly launched claude to boot before we send its first prompt.
-const READY_MS = Number(process.env.CMDER_READY_MS) || 6000
+const READY_MS = Number(process.env.HERALD_READY_MS) || 6000
 const DRY = process.argv.includes('--dry-run')
 
 const log = (m: string) => console.log(`${new Date().toISOString()} ${m}`)
@@ -368,14 +368,14 @@ async function listTmux(): Promise<Set<string>> {
 
 // Each session has two windows: window "claude" (controller-driven) and window
 // "shell" (a free shell for the user). We tag the claude pane with a pane-scoped
-// user option (@cmder), which — unlike pane titles — the running program
+// user option (@herald), which — unlike pane titles — the running program
 // (fish/claude) can't clobber, and which survives focus changes, non-zero
 // base-index, and controller restart. -s searches all windows in the session.
 async function claudePane(label: string): Promise<string> {
 	const r = await $({
 		nothrow: true,
 		quiet: true,
-	})`tmux list-panes -s -t ${T(label)} -F ${'#{pane_id}\t#{@cmder}\t#{window_name}'}`
+	})`tmux list-panes -s -t ${T(label)} -F ${'#{pane_id}\t#{@herald}\t#{window_name}'}`
 	const ids: string[] = []
 	let byName: string | null = null
 	for (const line of r.stdout.split('\n')) {
@@ -388,14 +388,14 @@ async function claudePane(label: string): Promise<string> {
 	return byName ?? ids[0] ?? T(label) // fall back to the `claude` window, then first pane
 }
 
-// The shell pane is the one tagged `@cmder shell` (the session's 2nd window). Fall
+// The shell pane is the one tagged `@herald shell` (the session's 2nd window). Fall
 // back to the pane in the window still named `shell` — sessions spawned before the
-// `@cmder` tag existed (or whose tag was lost) have no tag but keep the window name.
+// `@herald` tag existed (or whose tag was lost) have no tag but keep the window name.
 async function shellPane(label: string): Promise<string | null> {
 	const r = await $({
 		nothrow: true,
 		quiet: true,
-	})`tmux list-panes -s -t ${T(label)} -F ${'#{pane_id}\t#{@cmder}\t#{window_name}'}`
+	})`tmux list-panes -s -t ${T(label)} -F ${'#{pane_id}\t#{@herald}\t#{window_name}'}`
 	let byName: string | null = null
 	for (const line of r.stdout.split('\n')) {
 		const [id, role, win] = line.split('\t')
@@ -442,7 +442,7 @@ async function sendCmd(label: string, text: string) {
 		return
 	}
 	// The command's exit status is written to its done-file by the fish_postexec
-	// hook in the shell window (see cmder-fish.fish), so we type it verbatim.
+	// hook in the shell window (see herald-fish.fish), so we type it verbatim.
 	await typeInto(pane, text)
 }
 
@@ -450,14 +450,14 @@ async function doSpawn(label: string, dir: string) {
 	log(`spawning ${T(label)} in ${dir}`)
 	if (DRY) return
 	const tm = $({ nothrow: true, quiet: true })
-	// CMDER_LABEL/CMDER_STATE are set on the whole session (claude inherits them for
-	// its Stop/Notification hook); CMDER_SHELL marks only the shell window, where the
-	// fish_postexec hook writes command done-files (see cmder-fish.fish).
-	await tm`tmux new-session -d -s ${T(label)} -n claude -c ${dir} -e ${`CMDER_LABEL=${label}`} -e ${`CMDER_STATE=${STATE}`}`
+	// HERALD_LABEL/HERALD_STATE are set on the whole session (claude inherits them for
+	// its Stop/Notification hook); HERALD_SHELL marks only the shell window, where the
+	// fish_postexec hook writes command done-files (see herald-fish.fish).
+	await tm`tmux new-session -d -s ${T(label)} -n claude -c ${dir} -e ${`HERALD_LABEL=${label}`} -e ${`HERALD_STATE=${STATE}`}`
 	// Tag the claude pane, then open a second window as a free shell for the user.
-	await tm`tmux set-option -p -t ${T(label)} @cmder claude`
-	await tm`tmux new-window -t ${T(label)} -n shell -c ${dir} -e CMDER_SHELL=1`
-	await tm`tmux set-option -p -t ${T(label)} @cmder shell`
+	await tm`tmux set-option -p -t ${T(label)} @herald claude`
+	await tm`tmux new-window -t ${T(label)} -n shell -c ${dir} -e HERALD_SHELL=1`
+	await tm`tmux set-option -p -t ${T(label)} @herald shell`
 	await sleep(300)
 	await sendLine(label, 'claude')
 	// Leave the claude window focused so an attach shows it first.
@@ -483,7 +483,7 @@ async function doKill(label: string, switchTo: string | null) {
 
 // Bring this session on screen by switching the first client that's currently
 // viewing a controller-managed (`__*`) session — i.e. the terminal you use to watch
-// cmder sessions (e.g. WezTerm). Clients parked on your own non-`__` sessions are
+// herald sessions (e.g. WezTerm). Clients parked on your own non-`__` sessions are
 // left alone. Run outside tmux there is no "current" client, so we target it by name.
 async function showSession(label: string, window?: Window) {
 	log(`showing ${T(label)}${window ? ` (${window})` : ''}`)
@@ -510,12 +510,12 @@ async function showSession(label: string, window?: Window) {
 
 const atomicWrite = (content: string) => {
 	if (DRY) {
-		log('[dry] cmder-control would be rewritten')
+		log('[dry] herald-control would be rewritten')
 		return
 	}
-	const tmp = `${CMDER}.tmp`
+	const tmp = `${HERALD}.tmp`
 	writeFileSync(tmp, content)
-	renameSync(tmp, CMDER)
+	renameSync(tmp, HERALD)
 }
 
 // -------------------------------------------------------------- reconcile tick
@@ -669,8 +669,8 @@ export function planQueue(s: Session, rt: RtEntry, io: PlanIO): Dispatch[] {
 
 async function tick(rt: Rt) {
 	const live = await listTmux()
-	const mtimeA = safeMtime(CMDER)
-	const content = readFileSync(CMDER, 'utf8')
+	const mtimeA = safeMtime(HERALD)
+	const content = readFileSync(HERALD, 'utf8')
 	const { lines, sessions } = parse(content, loadAliases())
 	const modelLabels = new Set(sessions.map((s) => s.label))
 	const actions: (() => Promise<void>)[] = []
@@ -752,10 +752,10 @@ async function tick(rt: Rt) {
 		delete rt[label]
 	}
 
-	// If the user edited cmder-control while we computed, defer: skip write AND actions
+	// If the user edited herald-control while we computed, defer: skip write AND actions
 	// so nothing (e.g. a queued prompt) fires against a stale view.
-	if (safeMtime(CMDER) !== mtimeA) {
-		log('cmder-control changed mid-tick, deferring')
+	if (safeMtime(HERALD) !== mtimeA) {
+		log('herald-control changed mid-tick, deferring')
 		return
 	}
 	const newContent = applyOps(lines, buildOps(sessions)).join('\n')
@@ -791,7 +791,7 @@ const acquireLock = () => {
 			if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e
 			const owner = Number(readFileSync(LOCK, 'utf8').trim())
 			if (owner && owner !== process.pid && pidAlive(owner)) {
-				log(`another bot-cmder supervisor is already running (pid ${owner}); refusing to start a second`)
+				log(`another herald supervisor is already running (pid ${owner}); refusing to start a second`)
 				process.exit(1)
 			}
 			try {
@@ -816,18 +816,18 @@ const isMain = (() => {
 if (isMain)
 	void fire(async () => {
 		$.verbose = false
-		if (!existsSync(CMDER)) throw new Error(`control file not found: ${CMDER}`)
+		if (!existsSync(HERALD)) throw new Error(`control file not found: ${HERALD}`)
 		if (!existsSync(STATE)) mkdirSync(STATE, { recursive: true })
 		const rt = loadRt()
 		if (DRY) {
 			// One-shot preview: show what a single tick would do, then exit.
-			log(`bot-cmder dry-run against ${CMDER}`)
+			log(`herald dry-run against ${HERALD}`)
 			await tick(rt)
 			log('dry-run complete (no changes made)')
 			return
 		}
 		acquireLock()
-		log(`bot-cmder watching ${CMDER}`)
+		log(`herald watching ${HERALD}`)
 		while (true) {
 			await tick(rt)
 			await sleep(TICK_MS)

@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-import { applyOps, buildOps, frontierWindow, hasPendingInput, parse, planQueue } from './cmder'
+import { applyOps, buildOps, frontierWindow, hasPendingInput, parse, planQueue } from './herald'
 import { merge3, nearestIndex, toLines } from './tui'
 
 let failures = 0
@@ -8,7 +8,7 @@ const check = (name: string, cond: boolean, detail?: string) => {
 	if (!cond) failures++
 }
 
-// A self-contained sessions-only layout (independent of the live cmder file's
+// A self-contained sessions-only layout (independent of the live herald file's
 // current contents). The whole file is sessions now. Tabs are significant.
 const example = [
 	'superapp',
@@ -403,7 +403,7 @@ const wb = parse(withBlanks)
 check('blank-separated sessions both parsed', wb.sessions.length === 2 && wb.sessions.map((s) => s.label).join(',') === 'superapp,superapp-2')
 check('blank lines round-trip byte-identical', applyOps(wb.lines, buildOps(wb.sessions)).join('\n') === withBlanks)
 
-// 8. `pnpm cmder` TUI sync helpers. toLines mirrors nvim's buffer representation
+// 8. `pnpm herald` TUI sync helpers. toLines mirrors nvim's buffer representation
 // (a trailing newline is the eol marker, not an extra empty line).
 check('toLines drops the trailing-newline eol', JSON.stringify(toLines('a\nb\n')) === JSON.stringify(['a', 'b']))
 check('toLines keeps a missing final newline as a real last line', JSON.stringify(toLines('a\nb')) === JSON.stringify(['a', 'b']))

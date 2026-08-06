@@ -1,9 +1,0 @@
-#!/bin/sh
-# Claude Code Stop/Notification hook for bot-cmder.
-# Guarded by $CMDER_LABEL so it is a no-op for normal (non-cmder) Claude sessions.
-# Identity ($CMDER_LABEL) and $CMDER_STATE are inherited from the launching `claude`.
-# The event name is passed as $1; the controller reads the file's mtime for timing.
-[ -n "$CMDER_LABEL" ] || exit 0
-dir="${CMDER_STATE:-$HOME/_dev/bot-cmder/state}"
-mkdir -p "$dir"
-{ printf '{"event":"%s","raw":' "$1"; cat; printf '}\n'; } > "$dir/$CMDER_LABEL.json"

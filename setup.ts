@@ -6,10 +6,10 @@ import { fileURLToPath } from 'node:url'
 import { fire } from '@jgjp/fire'
 
 const here = dirname(fileURLToPath(import.meta.url))
-const hookPath = resolve(here, 'cmder-hook')
-const fishHookPath = resolve(here, 'cmder-fish.fish')
+const hookPath = resolve(here, 'herald-hook')
+const fishHookPath = resolve(here, 'herald-fish.fish')
 const fishConfDir = resolve(homedir(), '.config', 'fish', 'conf.d')
-const fishLinkPath = resolve(fishConfDir, 'cmder.fish')
+const fishLinkPath = resolve(fishConfDir, 'herald.fish')
 const settingsPath = resolve(homedir(), '.claude', 'settings.json')
 
 // A single hook entry in Claude Code's settings.json shape.
@@ -17,7 +17,7 @@ type HookEntry = { hooks: { type: string; command: string }[] }
 
 // Returns true if any command in the event's entries already invokes our hook.
 const alreadyInstalled = (entries: HookEntry[] | undefined): boolean =>
-	(entries ?? []).some((e) => e.hooks?.some((h) => h.command.includes('cmder-hook')))
+	(entries ?? []).some((e) => e.hooks?.some((h) => h.command.includes('herald-hook')))
 
 void fire(async () => {
 	// 1. Make the hook executable and ensure the state dir exists.
@@ -28,7 +28,7 @@ void fire(async () => {
 	console.log(`state dir ready: ${stateDir}`)
 
 	// 1b. Symlink the fish_postexec hook into fish's conf.d so command completion is
-	//     reported by fish itself (see cmder-fish.fish). Repo file stays the source.
+	//     reported by fish itself (see herald-fish.fish). Repo file stays the source.
 	if (existsSync(fishConfDir)) {
 		const entry = lstatSync(fishLinkPath, { throwIfNoEntry: false })
 		if (entry?.isSymbolicLink() && readlinkSync(fishLinkPath) === fishHookPath) {
@@ -57,19 +57,19 @@ void fire(async () => {
 	for (const event of ['Stop', 'Notification', 'UserPromptSubmit'] as const) {
 		settings.hooks[event] ??= []
 		if (alreadyInstalled(settings.hooks[event])) {
-			console.log(`${event}: cmder-hook already installed, skipping`)
+			console.log(`${event}: herald-hook already installed, skipping`)
 			continue
 		}
 		settings.hooks[event].push({
 			hooks: [{ type: 'command', command: `${hookPath} ${event}` }],
 		})
-		console.log(`${event}: added cmder-hook`)
+		console.log(`${event}: added herald-hook`)
 		changed = true
 	}
 
 	if (changed) {
 		// Back up once before the first modification.
-		const backup = `${settingsPath}.cmder-bak`
+		const backup = `${settingsPath}.herald-bak`
 		if (!existsSync(backup)) writeFileSync(backup, readFileSync(settingsPath))
 		writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`)
 		console.log(`updated ${settingsPath} (backup at ${backup})`)

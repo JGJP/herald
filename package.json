@@ -1,12 +1,12 @@
 {
-	"name": "bot-cmder",
+	"name": "herald",
 	"version": "1.0.0",
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"start": "tsx cmder.ts",
-		"cmder": "tsx tui.ts",
-		"dry-run": "tsx cmder.ts --dry-run",
+		"start": "tsx herald.ts",
+		"herald": "tsx tui.ts",
+		"dry-run": "tsx herald.ts --dry-run",
 		"setup": "tsx setup.ts",
 		"test": "tsx test.ts",
 		"type-check": "tsc --noEmit"

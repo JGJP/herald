@@ -1,7 +1,7 @@
-# bot-cmder
+# herald
 
 Run many interactive Claude Code instances in tmux and control/observe them all
-through a single plain-text file, `cmder-control`.
+through a single plain-text file, `herald-control`.
 
 The file is both a **dashboard** (Claude activity is written back as status
 markers) and a **control surface** (edits start/stop/clear sessions and queue
@@ -12,25 +12,25 @@ second.
 
 ```sh
 pnpm install
-pnpm setup   # makes cmder-hook executable, creates state/, and installs the
+pnpm setup   # makes herald-hook executable, creates state/, and installs the
              # Stop + Notification + UserPromptSubmit hooks into ~/.claude/settings.json
 ```
 
 `setup` merges its hooks into your **global** `~/.claude/settings.json` (backing
-it up to `settings.json.cmder-bak`). All are guarded by `$CMDER_LABEL`, so they
-are a no-op for your normal Claude sessions and only fire for cmder-launched ones.
+it up to `settings.json.herald-bak`). All are guarded by `$HERALD_LABEL`, so they
+are a no-op for your normal Claude sessions and only fire for herald-launched ones.
 
 ## Run
 
 ```sh
-pnpm start           # watch ./cmder-control and reconcile every second
+pnpm start           # watch ./herald-control and reconcile every second
 pnpm start --dry-run # log intended tmux actions / rewrites without doing them
-pnpm cmder           # edit cmder-control in a live Neovim (see below)
+pnpm herald           # edit herald-control in a live Neovim (see below)
 ```
 
-## Editing live (`pnpm cmder`)
+## Editing live (`pnpm herald`)
 
-`pnpm cmder` opens `cmder-control` in **real Neovim** (your own config and
+`pnpm herald` opens `herald-control` in **real Neovim** (your own config and
 keybindings) while the supervisor keeps writing to the same file. A small sidecar
 attached over nvim's RPC socket folds the controller's out-of-band writes (marker
 updates, drained `show` lines, …) into your buffer **without disturbing what you're
@@ -43,9 +43,9 @@ typing**:
   (your line wins on a genuine conflict) and keeps the cursor on the line you were on.
 
 Save with `:w` as usual — the display and file are then in sync. Requires `nvim` on
-your `PATH`; respects `CMDER_FILE`. Runs alongside `pnpm start` (that's the point).
+your `PATH`; respects `HERALD_FILE`. Runs alongside `pnpm start` (that's the point).
 
-## The `cmder-control` file
+## The `herald-control` file
 
 The whole file is the managed sessions region — keep your backlog and other
 notes in separate files so the supervisor's rewrites never touch them.
@@ -65,7 +65,7 @@ superapp-2
 ```
 
 - A line at column 0 is a **session**. It is, in order of precedence:
-  - an **alias** listed in `cmder-aliases.yaml` → its mapped path, tmux session
+  - an **alias** listed in `herald-aliases.yaml` → its mapped path, tmux session
     `__<alias>`; or
   - a **path** (`/abs`, `~/…`, or anything containing `/`) → that dir, with the
     label/tmux name taken from its basename (e.g. `~/_dev/_startale/superapp` →
@@ -127,7 +127,7 @@ superapp-2
 
 Each spawned session has **two windows**: window `claude` (driven by the
 controller) and window `shell` (a free shell for you to run commands in). The
-claude pane is tagged with a pane-scoped tmux option (`@cmder = claude`), so
+claude pane is tagged with a pane-scoped tmux option (`@herald = claude`), so
 prompts always target it regardless of which window/pane is focused.
 
 Attach to a session with `tmux attach -t __<label>` (switch windows with your
@@ -137,18 +137,18 @@ tmux prefix + `n`/`p`).
 
 - Permissions: launched Claudes inherit your global bypass setting
   (`skipDangerousModePermissionPrompt`); the supervisor does nothing about them.
-- Identity: each Claude launches with `CMDER_LABEL`/`CMDER_STATE` exported; the
+- Identity: each Claude launches with `HERALD_LABEL`/`HERALD_STATE` exported; the
   hooks inherit these and write `state/<label>.json`, which the loop reads (using
   the file's mtime as the event time).
 - Missing `~/_dev/<label>` ⇒ the session is annotated `[NO DIR …]` and skipped.
 - The loop is the sole writer of markers; it computes changes, writes the file,
-  then runs tmux actions, and defers if you edit `cmder-control` mid-tick.
+  then runs tmux actions, and defers if you edit `herald-control` mid-tick.
 
-## Repo aliases (`cmder-aliases.yaml`)
+## Repo aliases (`herald-aliases.yaml`)
 
-Optional. A YAML map of `label: path`, so a header in `cmder-control` can be a
+Optional. A YAML map of `label: path`, so a header in `herald-control` can be a
 short label instead of a full path. `~` expands to your home dir; the label
-becomes the tmux session name. See `cmder-aliases.example.yaml`.
+becomes the tmux session name. See `herald-aliases.example.yaml`.
 
 ```yaml
 superapp: ~/_dev/_startale/superapp
@@ -160,9 +160,9 @@ header that isn't a listed alias falls back to the path / bare-name rules above.
 
 ## Env overrides (mainly for testing)
 
-- `CMDER_FILE` — watch a different control file instead of `./cmder-control`.
-- `CMDER_ALIASES` — read aliases from a different file instead of `./cmder-aliases.yaml`.
-- `CMDER_READY_MS` — boot grace before the first prompt is sent (default 6000).
+- `HERALD_FILE` — watch a different control file instead of `./herald-control`.
+- `HERALD_ALIASES` — read aliases from a different file instead of `./herald-aliases.yaml`.
+- `HERALD_READY_MS` — boot grace before the first prompt is sent (default 6000).
 
 ## Test
 

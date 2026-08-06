@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-// `pnpm cmder` — edit cmder-control in real Neovim while the supervisor keeps
+// `pnpm herald` — edit herald-control in real Neovim while the supervisor keeps
 // writing to the same file. nvim owns the terminal (real vim, your own config);
 // this process is a sidecar that connects over nvim's RPC socket and folds the
 // controller's out-of-band writes (marker updates, drained lines) into the buffer
@@ -23,8 +23,8 @@ import { attach } from 'neovim'
 import { diff3Merge } from 'node-diff3'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
-const FILE = process.env.CMDER_FILE ? resolve(process.env.CMDER_FILE) : join(HERE, 'cmder-control')
-const SOCK = join(tmpdir(), `cmder-nvim-${process.pid}.sock`)
+const FILE = process.env.HERALD_FILE ? resolve(process.env.HERALD_FILE) : join(HERE, 'herald-control')
+const SOCK = join(tmpdir(), `herald-nvim-${process.pid}.sock`)
 const POLL_MS = 300
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
