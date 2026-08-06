@@ -434,6 +434,23 @@ async function shellPane(label: string): Promise<string | null> {
 	return byName
 }
 
+// The shell pane *only* if it still carries the `@herald shell` tag. A tmux-resurrect
+// restore (or continuum auto-restore) brings a session back with fresh panes that ran
+// `exec fish` under the session env alone: they lost the per-window HERALD_SHELL=1 that
+// makes the completion hook fire, and they lost the @herald tag. Such a pane is found by
+// shellPane()'s name fallback but returns null here, which is what flags it for repair.
+async function taggedShellPane(label: string): Promise<string | null> {
+	const r = await $({
+		nothrow: true,
+		quiet: true,
+	})`tmux list-panes -s -t ${T(label)} -F ${'#{pane_id}\t#{@herald}'}`
+	for (const line of r.stdout.split('\n')) {
+		const [id, role] = line.split('\t')
+		if (id && role === 'shell') return id
+	}
+	return null
+}
+
 async function typeInto(pane: string, text: string, vimInsert = false) {
 	const tm = $({ nothrow: true, quiet: true })
 	// Claude runs with vim keybindings: drop to normal mode then re-enter insert so
@@ -512,13 +529,19 @@ async function doSpawn(label: string, dir: string) {
 	if (!roles.has('claude') || !roles.has('shell')) log(`WARN incomplete spawn of ${T(label)} (tagged: ${[...roles].join(',') || 'none'})`)
 }
 
-// Recreate a missing shell window on a live session (e.g. after a partial spawn),
-// so command dispatch isn't blocked forever waiting for a shell pane.
+// Recreate the shell window on a live session so command completion is reported again.
+// Two cases: a partial spawn (no shell pane at all), or a tmux-resurrect restore that
+// brought the shell back stripped of its HERALD_SHELL env and @herald tag (see
+// taggedShellPane). In the restore case a stale, untagged shell pane exists — kill its
+// window first so we don't leave a duplicate — then create a fresh, tagged one.
 async function repairShell(label: string, dir: string) {
-	log(`repairing ${T(label)}: recreating missing shell window`)
 	if (DRY) return
+	const tm = $({ nothrow: true, quiet: true })
+	const stale = await shellPane(label)
+	log(`repairing ${T(label)}: ${stale ? 'recreating restored shell window (restoring HERALD_SHELL)' : 'recreating missing shell window'}`)
+	if (stale) await tm`tmux kill-window -t ${stale}`
 	await makeShellWindow(label, dir)
-	await $({ nothrow: true, quiet: true })`tmux select-window -t ${await claudePane(label)}`
+	await tm`tmux select-window -t ${await claudePane(label)}`
 }
 
 async function doKill(label: string, switchTo: string | null) {
@@ -813,20 +836,19 @@ async function tick(rt: Rt) {
 		// or pre-existing session gets startedAt 0 so the boot grace is already
 		// satisfied and only pane-readiness remains — never dispatch straight away.
 		rt[label] ??= { starting: true, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: s.prompts.filter((p) => !p.isCmd && !p.isBarrier && !p.isShow).length }
-		if (rt[label].starting) {
-			if (Date.now() - rt[label].startedAt < READY_MS) continue // let claude boot
-			// A session with `$command`s isn't ready until its shell pane physically
-			// exists — a command sent to a not-yet-created pane is lost and leaves the
-			// item stuck [EXECUTING]. (Skipped in --dry-run, where panes aren't real.)
-			if (!DRY && s.prompts.some((p) => p.isCmd) && (await shellPane(label)) === null) {
-				// Past the boot grace with no shell pane means a partial spawn, not a
-				// slow boot: recreate the shell window (self-heal) instead of blocking
-				// forever. The `null` guard prevents a duplicate window on retry.
-				actions.push(() => repairShell(label, dir))
-				continue
-			}
-			rt[label].starting = false
+		if (rt[label].starting && Date.now() - rt[label].startedAt < READY_MS) continue // let claude boot
+		// A session with `$command`s isn't ready until it has a *tagged* shell pane — the
+		// pane whose per-shell hook reports completion. A missing one means a partial
+		// spawn; an untagged one means a tmux-resurrect restore stripped HERALD_SHELL so
+		// the hook went silent (commands would hang at [EXECUTING]). Either way, recreate
+		// the shell window (self-heal) rather than dispatch into a pane that can't report
+		// back. Runs every tick past boot grace, so it also heals long-lived restores.
+		// (Skipped in --dry-run, where panes aren't real.)
+		if (!DRY && s.prompts.some((p) => p.isCmd) && (await taggedShellPane(label)) === null) {
+			actions.push(() => repairShell(label, dir))
+			continue
 		}
+		rt[label].starting = false
 		if (s.desiredSession && /NO DIR/i.test(s.desiredSession)) s.desiredSession = null
 		// Attention is a per-prompt marker now; strip any legacy session-level one.
 		clearAttention(s)
