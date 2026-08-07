@@ -9,8 +9,9 @@ prompts). A `tsx` supervisor loop merges every `*.herald` file in the repo dir i
 one logical control and reconciles it against live tmux every second. Split your
 work across as many `.herald` files as you like (e.g. `work.herald`,
 `personal.herald`) — they're combined into one dashboard and each is rewritten in
-place. A session (tmux label) may only be driven by one file; if two files declare
-the same label, the first wins and the later one is marked `[DUPLICATE]`.
+place. If the same label appears in more than one file (or twice in one), all its rows
+are **merged into one queue** — each file's rows keep their place and markers write back
+to whichever file they came from.
 
 ## Setup (once)
 
@@ -384,8 +385,9 @@ that matches `herald-aliases.yaml` uses the mapped path. See the aliases section
 - Missing `~/_dev/<label>` ⇒ the session is annotated `[NO DIR …]` and skipped.
 - The loop is the sole writer of markers; it computes changes, writes each file,
   then runs tmux actions, and defers if you edit any `.herald` file mid-tick.
-- A tmux label is driven by one file only: if two `.herald` files declare the same
-  session, the first (alphabetical) wins and the later one is marked `[DUPLICATE]`.
+- A label appearing in multiple files (or twice in one) is merged into a single queue,
+  its rows concatenated in filename order; each marker writes back to its own file, and
+  session-level state (dir, `[NO DIR …]`, a header `!`) comes from the first file.
 
 ## Repo aliases (`herald-aliases.yaml`)
 

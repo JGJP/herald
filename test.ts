@@ -505,18 +505,42 @@ check('same-line conflict keeps ours', JSON.stringify(merge3(['x', 'MINE'], ['x'
 check('nearestIndex finds the anchor line nearest the old row', nearestIndex(['a', 'x', 'b', 'x', 'c'], 'x', 3) === 3 && nearestIndex(['a', 'x', 'b', 'x', 'c'], 'x', 1) === 1)
 check('nearestIndex falls back to a clamped row when absent', nearestIndex(['a', 'b'], 'zzz', 9) === 1)
 
-// 9. Multi-file merge: every `.herald` file's sessions combine into one control. A
-// label claimed by an earlier file wins; a later file's duplicate is annotated and
-// dropped from the driven set, but its own file still rewrites it in place.
+// 9. Multi-file merge: a label appearing in several files becomes ONE logical queue —
+// every occurrence's rows combine (in file order), and a marker still writes back to
+// whichever file its row lives in. `shared` is in both files here.
 const fileA = parse('alpha\n\t: work on alpha\nshared\n\t: from A\n')
 const fileB = parse('shared\n\t: from B\nbeta\n\t: work on beta\n')
 const merged = mergeSessions([fileA.sessions, fileB.sessions])
-check('merge unions distinct sessions across files', [...merged.labels].sort().join(',') === 'alpha,beta,shared')
-check('merge drives one session per label (dup dropped)', merged.sessions.map((s) => s.label).join(',') === 'alpha,shared,beta')
-check("merge annotates the later file's duplicate", fileB.sessions[0].label === 'shared' && fileB.sessions[0].desiredSession === '[DUPLICATE]')
-check("merge leaves the winning file's session unannotated", fileA.sessions.find((s) => s.label === 'shared')!.desiredSession === null)
-// The dropped duplicate's own file writes the [DUPLICATE] marker back under its header.
-check('duplicate marker is written back into its file', applyOps(fileB.lines, buildOps(fileB.sessions)).join('\n') === 'shared\n\t: from B\n\t[DUPLICATE]\nbeta\n\t: work on beta\n')
+check('merge unions distinct labels across files', [...merged.labels].sort().join(',') === 'alpha,beta,shared')
+check('one merged session per label (no dropping)', merged.sessions.map((s) => s.label).join(',') === 'alpha,shared,beta')
+const sharedMerged = merged.sessions.find((s) => s.label === 'shared')!
+check(
+	'a shared label combines every file’s rows into one renumbered queue',
+	sharedMerged.prompts.map((p) => p.text).join(',') === 'from A,from B' && JSON.stringify(sharedMerged.prompts.map((p) => p.order)) === JSON.stringify([0, 1]),
+	JSON.stringify(sharedMerged.prompts.map((p) => [p.text, p.order])),
+)
+check('the merged session records its parts, primary (file A) first', sharedMerged.parts?.length === 2 && sharedMerged.parts![0] === fileA.sessions.find((s) => s.label === 'shared'))
+check('no [DUPLICATE] left on either file', fileA.sessions.find((s) => s.label === 'shared')!.desiredSession === null && fileB.sessions[0].desiredSession === null)
+
+// Driving the merged queue: the bottom row (from B, highest order) runs first; its
+// [EXECUTING] writes back into file B only — file A is untouched (per-file buildOps).
+const sharedRt = { sentAt: 0, cmdSentAt: 0, prevPromptCount: 2 }
+planQueue(sharedMerged, sharedRt, { now: 100, state: null, cmdDoneMtime: null })
+check('the bottom (file B) row dispatches first', sharedMerged.prompts.find((p) => p.text === 'from B')!.desiredKind === 'EXECUTING' && sharedMerged.prompts.find((p) => p.text === 'from A')!.desiredKind === null)
+check('the marker writes back into file B only', applyOps(fileB.lines, buildOps(fileB.sessions)).join('\n') === 'shared\n\t: from B\n\t\t[EXECUTING]\nbeta\n\t: work on beta\n')
+check('file A is left unchanged by a marker on file B', applyOps(fileA.lines, buildOps(fileA.sessions)).join('\n') === 'alpha\n\t: work on alpha\nshared\n\t: from A\n')
+
+// The frontier crosses the file boundary: finishing `from B` (file B) makes `from A`
+// (file A) the frontier, so B's marker is cleared and A gets the [EXECUTING] — a single
+// queue spanning two files.
+const xfA = parse('shared\n\t: from A\n')
+const xfB = parse('shared\n\t: from B\n')
+const xfMerged = mergeSessions([xfA.sessions, xfB.sessions]).sessions.find((s) => s.label === 'shared')!
+const xfRt = { sentAt: 0, cmdSentAt: 0, prevPromptCount: 2 }
+planQueue(xfMerged, xfRt, { now: 100, state: null, cmdDoneMtime: null }) // dispatch `from B`
+planQueue(xfMerged, xfRt, { now: 200, state: { event: 'Stop', mtimeMs: 200 }, cmdDoneMtime: null }) // B done → A runs
+check('frontier crosses to file A on B’s completion', applyOps(xfA.lines, buildOps(xfA.sessions)).join('\n') === 'shared\n\t: from A\n\t\t[EXECUTING]\n', applyOps(xfA.lines, buildOps(xfA.sessions)).join('\n'))
+check('file B’s marker is cleared as the frontier leaves it', applyOps(xfB.lines, buildOps(xfB.sessions)).join('\n') === 'shared\n\t: from B\n', applyOps(xfB.lines, buildOps(xfB.sessions)).join('\n'))
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

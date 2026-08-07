@@ -80,7 +80,14 @@ const MARKER: Record<Kind, string> = {
 }
 interface Prompt {
 	text: string
+	// Position in this item's own file (what buildOps rewrites). Distinct from `order`
+	// so a label merged across files still writes each marker back to the right file.
 	lineIdx: number
+	// The item's place in the drain order. For a single-file session this equals
+	// `lineIdx`; when a label is merged across files, mergeSessions renumbers it so every
+	// file's rows form one bottom-to-top queue. The queue logic orders by this, never by
+	// `lineIdx`.
+	order: number
 	indent: string
 	marker: { kind: Kind; lineIdx: number } | null
 	desiredKind: Kind | null
@@ -125,6 +132,11 @@ interface Session {
 	// it, so buildOps strips the `!` — a one-shot request.
 	showNow: boolean
 	showNowFired: boolean
+	// Set only on a merged logical session (a label that appears in >1 file): the
+	// per-file sessions it combines, primary (first file) first. planQueue drives the
+	// merged session; buildOps still runs on each part, and the tick syncs session-level
+	// markers (desiredSession / showNow) back to the primary part. Undefined otherwise.
+	parts?: Session[]
 }
 
 // A prompt line starts with `prompt:` or the shorthand `:`. A run of colons or a
@@ -196,6 +208,7 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 			cur.prompts.push({
 				text: body.replace(re, ''),
 				lineIdx: i,
+				order: i,
 				indent: tabs,
 				marker: null,
 				desiredKind: null,
@@ -212,6 +225,7 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 			cur.prompts.push({
 				text: '',
 				lineIdx: i,
+				order: i,
 				indent: tabs,
 				marker: null,
 				desiredKind: null,
@@ -301,23 +315,36 @@ export function applyOps(lines: string[], ops: Op[]): string[] {
 	return out
 }
 
-// Merge the per-file session lists (in file order) into one global list. tmux labels
-// are global, so the first file to claim a label wins; a later file's duplicate is
-// annotated `[DUPLICATE]` and dropped from the returned list — its own file still
-// rewrites it in place (via buildOps on that file's sessions), so the marker shows up.
+// Merge the per-file session lists (in file order) into one logical session per label.
+// tmux labels are global, so a label that appears in several files (or twice in one) is
+// combined into ONE entry whose queue is every occurrence's rows concatenated in file
+// order — `order` renumbers them into a single bottom-to-top drain. The prompt objects
+// are shared, so planQueue's marker mutations flow back to each file via buildOps (which
+// still runs per file, each writing only its own rows). Session-level fields come from
+// the first (primary) part; `parts` lets the tick sync session markers back to it.
 export function mergeSessions(perFile: Session[][]): { sessions: Session[]; labels: Set<string> } {
 	const labels = new Set<string>()
-	const sessions: Session[] = []
+	const groups = new Map<string, Session[]>()
 	for (const group of perFile) {
 		for (const s of group) {
 			if (RESERVED.has(s.label)) continue
-			if (labels.has(s.label)) {
-				s.desiredSession = '[DUPLICATE]'
-				continue
+			if (!groups.has(s.label)) {
+				groups.set(s.label, [])
+				labels.add(s.label)
 			}
-			labels.add(s.label)
-			sessions.push(s)
+			groups.get(s.label)!.push(s)
 		}
+	}
+	const sessions: Session[] = []
+	for (const parts of groups.values()) {
+		if (parts.length === 1) {
+			sessions.push(parts[0])
+			continue
+		}
+		const merged: Session = { ...parts[0], prompts: parts.flatMap((s) => s.prompts), parts }
+		merged.prompts.forEach((p, i) => (p.order = i)) // one cross-file drain sequence
+		for (const sec of parts.slice(1)) sec.desiredSession = null // drop any stale [DUPLICATE]
+		sessions.push(merged)
 	}
 	return { sessions, labels }
 }
@@ -699,17 +726,19 @@ export interface PlanIO {
 	cmdDoneMtime: number | null
 }
 
-// Nearest pending item above `idx` (the next to run, drain being bottom-to-top).
+// Nearest pending item above `idx` in drain order (the next to run, drain being
+// bottom-to-top). Ordering is by `order`, not `lineIdx`, so a merged label's rows drain
+// as one cross-file queue.
 const nearestAbove = (s: Session, idx: number): Prompt | null => {
-	const cands = s.prompts.filter((p) => p.lineIdx < idx && p.desiredKind === null)
-	return cands.length ? cands.reduce((a, b) => (b.lineIdx > a.lineIdx ? b : a)) : null
+	const cands = s.prompts.filter((p) => p.order < idx && p.desiredKind === null)
+	return cands.length ? cands.reduce((a, b) => (b.order > a.order ? b : a)) : null
 }
 
-// The bottom-to-top frontier: the top-most already-run item, or the file bottom on
+// The bottom-to-top frontier: the top-most already-run item, or the queue bottom on
 // a fresh queue. Shared by planQueue's fresh-dispatch branch and the spawn gate.
 const frontierIdx = (s: Session): number => {
 	const done = s.prompts.filter((p) => p.desiredKind === 'DONE')
-	return done.length ? Math.min(...done.map((p) => p.lineIdx)) : Number.POSITIVE_INFINITY
+	return done.length ? Math.min(...done.map((p) => p.order)) : Number.POSITIVE_INFINITY
 }
 
 // Whether a session has a pending item the next tick would dispatch. A bare header
@@ -723,10 +752,10 @@ export const hasPendingInput = (s: Session): boolean => {
 // The window used by the last real task before a `show` (the nearest prompt/command
 // below it in file order, since the queue drains bottom-to-top). Defaults to the
 // claude pane when nothing ran before it.
-const lastTaskWindow = (s: Session, showIdx: number): Window => {
+const lastTaskWindow = (s: Session, showOrder: number): Window => {
 	const below = s.prompts
-		.filter((p) => p.lineIdx > showIdx && !p.isShow)
-		.sort((a, b) => a.lineIdx - b.lineIdx)[0]
+		.filter((p) => p.order > showOrder && !p.isShow)
+		.sort((a, b) => a.order - b.order)[0]
 	return below ? windowOf(below) : { kind: 'claude', n: 1 }
 }
 
@@ -736,7 +765,7 @@ const lastTaskWindow = (s: Session, showIdx: number): Window => {
 // the right window.
 export const frontierWindow = (s: Session): Window | undefined => {
 	const active = s.prompts.find((p) => p.desiredKind === 'EXECUTING' || p.desiredKind === 'ATTENTION')
-	const done = s.prompts.filter((p) => p.desiredKind === 'DONE').sort((a, b) => a.lineIdx - b.lineIdx)[0]
+	const done = s.prompts.filter((p) => p.desiredKind === 'DONE').sort((a, b) => a.order - b.order)[0]
 	const item = active ?? done
 	return item ? windowOf(item) : undefined
 }
@@ -785,9 +814,9 @@ export function planQueue(s: Session, rt: QueueRt, io: PlanIO): Dispatch[] {
 		for (;;) {
 			const next = nearestAbove(s, cursor)
 			if (next?.isShow) {
-				out.push({ type: 'show', window: lastTaskWindow(s, next.lineIdx) })
+				out.push({ type: 'show', window: lastTaskWindow(s, next.order) })
 				next.fired = true
-				cursor = next.lineIdx
+				cursor = next.order
 				continue
 			}
 			if (next) dispatch(next)
@@ -801,7 +830,7 @@ export function planQueue(s: Session, rt: QueueRt, io: PlanIO): Dispatch[] {
 		if (active.isCmd) {
 			if (io.cmdDoneMtime !== null && io.cmdDoneMtime > (rt.cmdSentAt ?? 0)) {
 				active.desiredKind = 'DONE'
-				drainUp(active.lineIdx, active)
+				drainUp(active.order, active)
 			}
 		} else if (active.text.trim() === '/clear') {
 			// `/clear` clears the conversation without invoking the model, so it never
@@ -809,10 +838,10 @@ export function planQueue(s: Session, rt: QueueRt, io: PlanIO): Dispatch[] {
 			// [EXECUTING] waiting for one. It's complete the moment it's been sent (a tick
 			// ago, since dispatch happens below), so mark it done and keep draining.
 			active.desiredKind = 'DONE'
-			drainUp(active.lineIdx, active)
+			drainUp(active.order, active)
 		} else if (io.state && io.state.event === 'Stop' && io.state.mtimeMs > rt.sentAt) {
 			active.desiredKind = 'DONE'
-			drainUp(active.lineIdx, active)
+			drainUp(active.order, active)
 		} else if (io.state && io.state.event === 'Notification' && io.state.mtimeMs > rt.sentAt) {
 			// Claude is blocked waiting for input mid-task: flag this prompt.
 			active.desiredKind = 'ATTENTION'
@@ -959,6 +988,15 @@ async function tick(rt: Rt) {
 		actions.push(() => doKill(label, survivor))
 		rmAllDoneFiles(label)
 		delete rt[label]
+	}
+
+	// A merged session's session-level markers were computed on the merged object; write
+	// them to the primary (first-file) part so buildOps — which runs on the per-file
+	// parts — emits them into that file. (Prompt markers already flow via shared objects.)
+	for (const s of sessions) {
+		if (!s.parts) continue
+		s.parts[0].desiredSession = s.desiredSession
+		s.parts[0].showNowFired = s.showNowFired
 	}
 
 	// If the user edited any `.herald` file while we computed, defer: skip writes AND
