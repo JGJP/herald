@@ -87,6 +87,11 @@ interface Prompt {
 	// A `$command` line: runs once in the session's shell window, then is marked
 	// [DONE] like a finished prompt. It never enters the claude prompt queue.
 	isCmd: boolean
+	// The 1-based lane/pane this item belongs to. `:`/`$`/`#` are lane 1 (today's
+	// single queue); `:2`/`::`, `$2`/`$$`, `#2`/`##` are lane 2, and so on. Within a
+	// lane items serialize bottom-to-top (claude window for prompts, shell for `$`);
+	// different lanes run concurrently, each in its own claude<N>/shell<N> window.
+	pane: number
 	// A `#` line: a human action. It never runs or gets a marker; when the drain
 	// reaches it the queue halts there until the line is removed.
 	isBarrier: boolean
@@ -125,12 +130,17 @@ interface Session {
 	showNowFired: boolean
 }
 
-// A prompt line starts with `prompt:` or the shorthand `:`.
-const PROMPT_RE = /^(?:prompt:|:)\s*/i
-// A command line starts with `$`; the command runs in the shell window.
-const CMD_RE = /^\$\s*/
-// A barrier line starts with `#`; it marks a human action that halts the queue.
-const BARRIER_RE = /^#\s*/
+// A prompt line starts with `prompt:` or the shorthand `:`. A run of colons or a
+// trailing number selects the lane/pane: `:`→1, `::`/`:2`→2, `:::`/`:3`→3, …
+const PROMPT_RE = /^(?:prompt:|(:+)(\d*))\s*/i
+// A command line starts with `$` (runs in the shell window); `$$`/`$2`→lane 2, etc.
+const CMD_RE = /^(\$+)(\d*)\s*/
+// A barrier line starts with `#` (a human action that halts the queue); `##`/`#2`
+// halt lane 2 only, etc.
+const BARRIER_RE = /^(#+)(\d*)\s*/
+// A sigil run of length `run` (e.g. `::` → 2) or an explicit `digits` suffix (which
+// wins) picks the 1-based lane. `prompt:`/plain sigils fall through to lane 1.
+const paneFromSigil = (run: string | undefined, digits: string | undefined): number => (digits ? Math.max(1, parseInt(digits, 10) || 1) : run ? run.length : 1)
 const isAttention = (x: string | null): boolean => !!x && /NEEDS ATTENTION/i.test(x)
 const clearAttention = (s: Session) => {
 	if (isAttention(s.desiredSession)) s.desiredSession = null
@@ -177,15 +187,19 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 			// punctuation (`: ship it!`) as text; only `: ship it !` is a reveal. It's
 			// stripped from the line once consumed.
 			const isCmd = CMD_RE.test(t)
+			const re = isCmd ? CMD_RE : PROMPT_RE
+			const m = t.match(re)!
+			const pane = paneFromSigil(m[1], m[2])
 			const bang = /\s!$/.test(t)
 			const body = bang ? t.slice(0, -1).trimEnd() : t
 			cur.prompts.push({
-				text: body.replace(isCmd ? CMD_RE : PROMPT_RE, ''),
+				text: body.replace(re, ''),
 				lineIdx: i,
 				indent: tabs,
 				marker: null,
 				desiredKind: null,
 				isCmd,
+				pane,
 				isBarrier: false,
 				isShow: false,
 				fired: false,
@@ -194,6 +208,7 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 				strippedLine: bang ? tabs + body : undefined,
 			})
 		} else if (BARRIER_RE.test(t)) {
+			const m = t.match(BARRIER_RE)!
 			cur.prompts.push({
 				text: t.replace(BARRIER_RE, ''),
 				lineIdx: i,
@@ -201,6 +216,7 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 				marker: null,
 				desiredKind: null,
 				isCmd: false,
+				pane: paneFromSigil(m[1], m[2]),
 				isBarrier: true,
 				isShow: false,
 				fired: false,
@@ -214,6 +230,7 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 				marker: null,
 				desiredKind: null,
 				isCmd: false,
+				pane: 1,
 				isBarrier: false,
 				isShow: true,
 				fired: false,
@@ -322,14 +339,25 @@ export function mergeSessions(perFile: Session[][]): { sessions: Session[]; labe
 
 // --------------------------------------------------------------- runtime state
 
-interface RtEntry {
-	starting: boolean
-	startedAt: number
+// Per-lane queue state. Each lane (pane) is an independent serial queue, so its
+// timers/counters are tracked separately; planQueue reads/writes exactly these fields.
+interface LaneRt {
 	sentAt: number
 	// When the in-flight shell command was dispatched; its done-file must be
 	// newer than this to count as finished.
 	cmdSentAt: number
 	prevPromptCount: number
+	// A lane whose claude pane was just created boots before it can take prompts
+	// (n>1 only; lane 1's claude boots with the session, gated by RtEntry.starting).
+	starting: boolean
+	startedAt: number
+}
+// The subset planQueue itself touches — lets tests pass a plain object.
+type QueueRt = Pick<LaneRt, 'sentAt' | 'cmdSentAt' | 'prevPromptCount'>
+interface RtEntry {
+	starting: boolean
+	startedAt: number
+	lanes: Record<number, LaneRt>
 }
 type Rt = Record<string, RtEntry>
 
@@ -348,8 +376,13 @@ interface StateEvent {
 	event: string
 	mtimeMs: number
 }
-function readState(label: string): StateEvent | null {
-	const p = join(STATE, `${label}.json`)
+// Done-files are per lane. Lane 1 keeps the bare `<label>.json`/`<label>.cmd` names
+// (back-compat, incl. tmux-resurrect restores that predate HERALD_PANE); lane n>1 uses
+// `<label>.<n>.json`/`<label>.<n>.cmd`, matching the `HERALD_PANE` suffix the hooks add.
+const paneSuffix = (n: number) => (n > 1 ? `.${n}` : '')
+const statePath = (label: string, n: number) => join(STATE, `${label}${paneSuffix(n)}.json`)
+function readState(label: string, n: number): StateEvent | null {
+	const p = statePath(label, n)
 	try {
 		const event = JSON.parse(readFileSync(p, 'utf8')).event as string
 		return { event, mtimeMs: statSync(p).mtimeMs }
@@ -357,25 +390,36 @@ function readState(label: string): StateEvent | null {
 		return null
 	}
 }
-const rmState = (label: string) => {
+const rmState = (label: string, n: number) => {
 	try {
-		unlinkSync(join(STATE, `${label}.json`))
+		unlinkSync(statePath(label, n))
 	} catch {}
 }
-// A finished `$command` writes its exit status to state/<label>.cmd; the
+// A finished `$command` writes its exit status to state/<label>[.n].cmd; the
 // controller polls this file's mtime to know the command has actually exited.
-const cmdDonePath = (label: string) => join(STATE, `${label}.cmd`)
-const readCmdDone = (label: string): number | null => {
+const cmdDonePath = (label: string, n: number) => join(STATE, `${label}${paneSuffix(n)}.cmd`)
+const readCmdDone = (label: string, n: number): number | null => {
 	try {
-		return statSync(cmdDonePath(label)).mtimeMs
+		return statSync(cmdDonePath(label, n)).mtimeMs
 	} catch {
 		return null
 	}
 }
-const rmCmdDone = (label: string) => {
+const rmCmdDone = (label: string, n: number) => {
 	try {
-		unlinkSync(cmdDonePath(label))
+		unlinkSync(cmdDonePath(label, n))
 	} catch {}
+}
+// Remove every lane's done-files for a label (session teardown), including numbered
+// panes, so a later reuse of the label doesn't read a stale completion.
+const rmAllDoneFiles = (label: string) => {
+	for (const f of readdirSync(STATE)) {
+		if (f === `${label}.json` || f === `${label}.cmd` || new RegExp(`^${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.\\d+\\.(json|cmd)$`).test(f)) {
+			try {
+				unlinkSync(join(STATE, f))
+			} catch {}
+		}
+	}
 }
 const safeMtime = (p: string): number => {
 	try {
@@ -401,59 +445,56 @@ async function listTmux(): Promise<Set<string>> {
 	return out
 }
 
-// Each session has two windows: window "claude" (controller-driven) and window
-// "shell" (a free shell for the user). We tag the claude pane with a pane-scoped
-// user option (@herald), which — unlike pane titles — the running program
-// (shell/claude) can't clobber, and which survives focus changes, non-zero
-// base-index, and controller restart. -s searches all windows in the session.
-async function claudePane(label: string): Promise<string> {
-	const r = await $({
-		nothrow: true,
-		quiet: true,
-	})`tmux list-panes -s -t ${T(label)} -F ${'#{pane_id}\t#{@herald}\t#{window_name}'}`
-	const ids: string[] = []
-	let byName: string | null = null
-	for (const line of r.stdout.split('\n')) {
-		const [id, role, win] = line.split('\t')
-		if (!id) continue
-		ids.push(id)
-		if (role === 'claude') return id
-		if (win === 'claude') byName ??= id
-	}
-	return byName ?? ids[0] ?? T(label) // fall back to the `claude` window, then first pane
-}
+// Each lane has a claude window (prompts) and a shell window (`$command`s). We tag each
+// pane with a pane-scoped user option (@herald = the role string) which — unlike pane
+// titles — the running program can't clobber, and which survives focus changes, non-zero
+// base-index, and controller restart. Lane 1 uses the bare roles `claude`/`shell` (the
+// window names too), lane n>1 uses `claude<n>`/`shell<n>`. -s searches all windows.
+type PaneKind = 'claude' | 'shell'
+const paneRole = (kind: PaneKind, n: number): string => (n > 1 ? `${kind}${n}` : kind)
 
-// The shell pane is the one tagged `@herald shell` (the session's 2nd window). Fall
-// back to the pane in the window still named `shell` — sessions spawned before the
-// `@herald` tag existed (or whose tag was lost) have no tag but keep the window name.
-async function shellPane(label: string): Promise<string | null> {
+// Resolve a lane's pane by role: prefer the @herald tag, else the window still named for
+// that role (tag lost on tmux-resurrect, or a pre-tag session). Null if absent.
+async function paneFor(label: string, kind: PaneKind, n: number): Promise<string | null> {
+	const role = paneRole(kind, n)
 	const r = await $({
 		nothrow: true,
 		quiet: true,
 	})`tmux list-panes -s -t ${T(label)} -F ${'#{pane_id}\t#{@herald}\t#{window_name}'}`
 	let byName: string | null = null
 	for (const line of r.stdout.split('\n')) {
-		const [id, role, win] = line.split('\t')
+		const [id, tag, win] = line.split('\t')
 		if (!id) continue
-		if (role === 'shell') return id
-		if (win === 'shell') byName ??= id
+		if (tag === role) return id
+		if (win === role) byName ??= id
 	}
 	return byName
 }
 
-// The shell pane *only* if it still carries the `@herald shell` tag. A tmux-resurrect
-// restore (or continuum auto-restore) brings a session back with fresh panes that ran
-// `exec fish` under the session env alone: they lost the per-window HERALD_SHELL=1 that
-// makes the completion hook fire, and they lost the @herald tag. Such a pane is found by
-// shellPane()'s name fallback but returns null here, which is what flags it for repair.
-async function taggedShellPane(label: string): Promise<string | null> {
+// The lane-1 claude pane, never null: falls back to the first pane / session target so
+// select-window and reveals always have something to point at during a partial spawn.
+async function claudePane(label: string, n = 1): Promise<string> {
+	const found = await paneFor(label, 'claude', n)
+	if (found) return found
+	const r = await $({ nothrow: true, quiet: true })`tmux list-panes -s -t ${T(label)} -F ${'#{pane_id}'}`
+	return r.stdout.split('\n')[0]?.trim() || T(label)
+}
+const shellPane = (label: string, n = 1) => paneFor(label, 'shell', n)
+
+// The pane *only* if it still carries its @herald tag. A tmux-resurrect restore brings a
+// session back with fresh panes that ran `exec fish` under the session env alone: they
+// lost the per-window HERALD_SHELL=1/HERALD_PANE that make the completion hook fire, and
+// lost the @herald tag. Such a pane is found by paneFor()'s name fallback but returns null
+// here, which is what flags it for repair.
+async function taggedPane(label: string, kind: PaneKind, n: number): Promise<string | null> {
+	const role = paneRole(kind, n)
 	const r = await $({
 		nothrow: true,
 		quiet: true,
 	})`tmux list-panes -s -t ${T(label)} -F ${'#{pane_id}\t#{@herald}'}`
 	for (const line of r.stdout.split('\n')) {
-		const [id, role] = line.split('\t')
-		if (id && role === 'shell') return id
+		const [id, tag] = line.split('\t')
+		if (id && tag === role) return id
 	}
 	return null
 }
@@ -476,21 +517,21 @@ async function typeInto(pane: string, text: string, vimInsert = false) {
 
 // `vimInsert` prep only makes sense for a running claude (prompts, /clear); the
 // launch line below is typed into the shell before claude starts.
-async function sendLine(label: string, text: string, vimInsert = false) {
-	log(`${DRY ? '[dry] ' : ''}send ${T(label)}: ${JSON.stringify(text)}`)
+async function sendLine(label: string, text: string, vimInsert = false, n = 1) {
+	log(`${DRY ? '[dry] ' : ''}send ${T(label)}${n > 1 ? `:${n}` : ''}: ${JSON.stringify(text)}`)
 	if (DRY) return
-	await typeInto(await claudePane(label), text, vimInsert)
+	await typeInto(await claudePane(label, n), text, vimInsert)
 }
 
-// Run a `$command` line in the session's shell window. The per-shell hook in
-// that window writes the command's exit status to its done-file *after* it exits,
-// so the controller can tell when the command has actually finished (not just sent).
-async function sendCmd(label: string, text: string) {
-	log(`${DRY ? '[dry] ' : ''}cmd ${T(label)}: ${JSON.stringify(text)}`)
+// Run a `$command` line in lane `n`'s shell window. The per-shell hook in that window
+// writes the command's exit status to its done-file *after* it exits, so the controller
+// can tell when the command has actually finished (not just sent).
+async function sendCmd(label: string, text: string, n = 1) {
+	log(`${DRY ? '[dry] ' : ''}cmd ${T(label)}${n > 1 ? `:${n}` : ''}: ${JSON.stringify(text)}`)
 	if (DRY) return
-	const pane = await shellPane(label)
+	const pane = await shellPane(label, n)
 	if (!pane) {
-		log(`no shell pane for ${T(label)}, skipping command`)
+		log(`no shell pane ${n} for ${T(label)}, skipping command`)
 		return
 	}
 	// The command's exit status is written to its done-file by the per-shell hook
@@ -498,15 +539,28 @@ async function sendCmd(label: string, text: string) {
 	await typeInto(pane, text)
 }
 
-// Open the session's shell window: a free shell for the user and where `$command`
-// lines run. HERALD_SHELL marks it as the pane whose per-shell hook writes command
-// done-files; HERALD_LABEL/HERALD_STATE are set here too (not just at the session level)
-// so a shell recreated on an env-less session still reports completion.
-async function makeShellWindow(label: string, dir: string) {
+// Create lane `n`'s pane of `kind` as a new window, wired for completion reporting:
+// HERALD_LABEL/HERALD_STATE (so a pane recreated on an env-less session still reports),
+// HERALD_SHELL to mark a shell as the command-runner, and HERALD_PANE=n (n>1) so the hook
+// suffixes its done-file. A claude pane also launches `claude` (the caller waits out the
+// boot grace before dispatching to it). Returns the new pane id.
+async function ensurePaneWindow(label: string, dir: string, kind: PaneKind, n: number): Promise<string> {
 	const tm = $({ nothrow: true, quiet: true })
-	await tm`tmux new-window -t ${T(label)} -n shell -c ${dir} -e HERALD_SHELL=1 -e ${`HERALD_LABEL=${label}`} -e ${`HERALD_STATE=${STATE}`}`
-	await tm`tmux set-option -p -t ${T(label)} @herald shell`
+	const role = paneRole(kind, n)
+	const env = ['-e', `HERALD_LABEL=${label}`, '-e', `HERALD_STATE=${STATE}`]
+	if (kind === 'shell') env.push('-e', 'HERALD_SHELL=1')
+	if (n > 1) env.push('-e', `HERALD_PANE=${n}`)
+	const created = (await tm`tmux new-window -P -F ${'#{pane_id}'} -t ${T(label)} -n ${role} -c ${dir} ${env}`).stdout.trim()
+	await tm`tmux set-option -p -t ${created} @herald ${role}`
+	if (kind === 'claude') {
+		await sleep(300)
+		await typeInto(created, 'claude')
+	}
+	return created
 }
+// Lane 1's shell window (the original free shell); kept as a thin alias for the callers
+// (doSpawn / repairShell) that only ever touch lane 1.
+const makeShellWindow = (label: string, dir: string) => ensurePaneWindow(label, dir, 'shell', 1)
 
 // The @herald roles present on a session's panes (e.g. {claude, shell}). A complete
 // session has both; anything missing means a tmux step during spawn silently failed.
@@ -536,18 +590,18 @@ async function doSpawn(label: string, dir: string) {
 	if (!roles.has('claude') || !roles.has('shell')) log(`WARN incomplete spawn of ${T(label)} (tagged: ${[...roles].join(',') || 'none'})`)
 }
 
-// Recreate the shell window on a live session so command completion is reported again.
-// Two cases: a partial spawn (no shell pane at all), or a tmux-resurrect restore that
-// brought the shell back stripped of its HERALD_SHELL env and @herald tag (see
-// taggedShellPane). In the restore case a stale, untagged shell pane exists — kill its
-// window first so we don't leave a duplicate — then create a fresh, tagged one.
-async function repairShell(label: string, dir: string) {
+// Recreate lane `n`'s shell window so command completion is reported again. Two cases:
+// a partial/absent pane, or a tmux-resurrect restore that brought the shell back stripped
+// of its HERALD_SHELL/HERALD_PANE env and @herald tag (see taggedPane). In the restore
+// case a stale, untagged shell pane exists — kill its window first so we don't leave a
+// duplicate — then create a fresh, tagged one. Leaves the lane-1 claude window focused.
+async function repairShell(label: string, dir: string, n = 1) {
 	if (DRY) return
 	const tm = $({ nothrow: true, quiet: true })
-	const stale = await shellPane(label)
-	log(`repairing ${T(label)}: ${stale ? 'recreating restored shell window (restoring HERALD_SHELL)' : 'recreating missing shell window'}`)
+	const stale = await shellPane(label, n)
+	log(`repairing ${T(label)} shell${n > 1 ? n : ''}: ${stale ? 'recreating restored window (restoring HERALD_SHELL)' : 'recreating missing window'}`)
 	if (stale) await tm`tmux kill-window -t ${stale}`
-	await makeShellWindow(label, dir)
+	await ensurePaneWindow(label, dir, 'shell', n)
 	await tm`tmux select-window -t ${await claudePane(label)}`
 }
 
@@ -573,16 +627,17 @@ async function doKill(label: string, switchTo: string | null) {
 // herald sessions (e.g. WezTerm). Clients parked on your own non-`__` sessions are
 // left alone. Run outside tmux there is no "current" client, so we target it by name.
 async function showSession(label: string, window?: Window) {
-	log(`showing ${T(label)}${window ? ` (${window})` : ''}`)
+	log(`showing ${T(label)}${window ? ` (${paneRole(window.kind, window.n)})` : ''}`)
 	if (DRY) return
 	const tm = $({ nothrow: true, quiet: true })
 	// Bring WezTerm (the terminal watching these sessions) to the foreground, so a
 	// `show`/`!` actually surfaces it even when another macOS app is focused. Best-effort.
 	await tm`osascript -e ${'tell application "WezTerm" to activate'}`
-	// Reveal the window the caller asked for (e.g. the shell for a `$command` show),
-	// so switching the client lands on it rather than the session's last-active window.
+	// Reveal the window the caller asked for (e.g. the shell for a `$command` show, or a
+	// numbered lane's pane), so switching the client lands on it rather than the session's
+	// last-active window.
 	if (window) {
-		const pane = window === 'shell' ? await shellPane(label) : await claudePane(label)
+		const pane = await paneFor(label, window.kind, window.n)
 		if (pane) await tm`tmux select-window -t ${pane}`
 	}
 	const r = await tm`tmux list-clients -F ${'#{client_name}\t#{client_session}'}`
@@ -639,7 +694,13 @@ function controlFiles(): string[] {
 // items above it (smaller lineIdx) are pending, items below it have already run.
 
 export type DispatchType = 'prompt' | 'cmd' | 'clear' | 'show'
-export type Window = 'claude' | 'shell'
+// A concrete pane to reveal: kind (claude/shell) + 1-based lane. `!` on a `:2`/`$2`
+// line reveals `claude2`/`shell2`; a header `!`/`show` reveals the frontier item's pane.
+export interface Window {
+	kind: PaneKind
+	n: number
+}
+const windowOf = (p: Prompt): Window => ({ kind: p.isCmd ? 'shell' : 'claude', n: p.pane })
 export interface Dispatch {
 	type: DispatchType
 	text?: string
@@ -683,7 +744,7 @@ const lastTaskWindow = (s: Session, showIdx: number): Window => {
 	const below = s.prompts
 		.filter((p) => p.lineIdx > showIdx && !p.isShow && !p.isBarrier)
 		.sort((a, b) => a.lineIdx - b.lineIdx)[0]
-	return below?.isCmd ? 'shell' : 'claude'
+	return below ? windowOf(below) : { kind: 'claude', n: 1 }
 }
 
 // The window of the session's frontier item — whatever is currently [EXECUTING] (or
@@ -694,8 +755,18 @@ export const frontierWindow = (s: Session): Window | undefined => {
 	const active = s.prompts.find((p) => p.desiredKind === 'EXECUTING' || p.desiredKind === 'ATTENTION')
 	const done = s.prompts.filter((p) => p.desiredKind === 'DONE').sort((a, b) => a.lineIdx - b.lineIdx)[0]
 	const item = active ?? done
-	return item ? (item.isCmd ? 'shell' : 'claude') : undefined
+	return item ? windowOf(item) : undefined
 }
+
+// The distinct lanes (pane numbers) present in a session, ascending. Each is planned
+// independently and runs concurrently with the others.
+export const lanesOf = (s: Session): number[] => [...new Set(s.prompts.map((p) => p.pane))].sort((a, b) => a - b)
+// A lane's own view: only its items. planQueue on this mutates the shared Prompt objects
+// but confines drain/frontier/keepOnly to the lane, so each lane keeps its own marker.
+const laneView = (s: Session, n: number): Session => ({ ...s, prompts: s.prompts.filter((p) => p.pane === n) })
+const laneHasClaude = (s: Session, n: number) => s.prompts.some((p) => p.pane === n && !p.isCmd && !p.isBarrier && !p.isShow)
+const laneHasShell = (s: Session, n: number) => s.prompts.some((p) => p.pane === n && p.isCmd)
+const lanePromptCount = (s: Session, n: number) => s.prompts.filter((p) => p.pane === n && !p.isCmd && !p.isBarrier && !p.isShow).length
 
 // Only the frontier item keeps a marker: strip every other [EXECUTING]/[DONE].
 const keepOnly = (s: Session, keep: Prompt | null) => {
@@ -708,7 +779,7 @@ const keepOnly = (s: Session, keep: Prompt | null) => {
 // Decide the next transition for one (spawned, ready) session. Mutates the items'
 // desiredKind and the runtime timers; returns the lines to send this tick. Pure
 // w.r.t. I/O so it can be unit-tested by feeding synthetic events.
-export function planQueue(s: Session, rt: RtEntry, io: PlanIO): Dispatch[] {
+export function planQueue(s: Session, rt: QueueRt, io: PlanIO): Dispatch[] {
 	const out: Dispatch[] = []
 	const promptCount = s.prompts.filter((p) => !p.isCmd && !p.isBarrier && !p.isShow).length
 	const hasBarrier = s.prompts.some((p) => p.isBarrier)
@@ -827,7 +898,7 @@ async function tick(rt: Rt) {
 			// pending `show`, or a `!` "show now" header, also counts — you can't
 			// switch to a session that isn't there yet — so it spawns first.
 			if (!hasPendingInput(s) && !s.showNow) continue
-			rt[label] = { starting: true, startedAt: Date.now(), sentAt: 0, cmdSentAt: 0, prevPromptCount: s.prompts.filter((p) => !p.isCmd && !p.isBarrier && !p.isShow).length }
+			rt[label] = { starting: true, startedAt: Date.now(), lanes: {} }
 			actions.push(() => doSpawn(label, dir))
 			continue
 		}
@@ -837,50 +908,66 @@ async function tick(rt: Rt) {
 			actions.push(() => showSession(label, frontierWindow(s)))
 			s.showNowFired = true
 		}
-		// A `!` appended to an item's marker (e.g. `[NEEDS ATTENTION]!`) reveals that
-		// item's window — the shell for a `$command`, the claude pane otherwise.
+		// A `!` appended to an item's marker or its own line reveals that item's pane —
+		// the shell for a `$command`, the claude pane otherwise, in the item's lane.
 		for (const p of s.prompts) {
 			if (!p.showNow || p.showNowFired) continue
-			const window: Window = p.isCmd ? 'shell' : 'claude'
+			const window = windowOf(p)
 			actions.push(() => showSession(label, window))
 			p.showNowFired = true
 		}
 		// Every session we see live for the first time is un-ready until it clears the
 		// grace below. A fresh spawn set this above (with a boot deadline); a reconnect
-		// or pre-existing session gets startedAt 0 so the boot grace is already
-		// satisfied and only pane-readiness remains — never dispatch straight away.
-		rt[label] ??= { starting: true, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: s.prompts.filter((p) => !p.isCmd && !p.isBarrier && !p.isShow).length }
-		if (rt[label].starting && Date.now() - rt[label].startedAt < READY_MS) continue // let claude boot
-		// A session with `$command`s isn't ready until it has a *tagged* shell pane — the
-		// pane whose per-shell hook reports completion. A missing one means a partial
-		// spawn; an untagged one means a tmux-resurrect restore stripped HERALD_SHELL so
-		// the hook went silent (commands would hang at [EXECUTING]). Either way, recreate
-		// the shell window (self-heal) rather than dispatch into a pane that can't report
-		// back. Runs every tick past boot grace, so it also heals long-lived restores.
-		// (Skipped in --dry-run, where panes aren't real.)
-		if (!DRY && s.prompts.some((p) => p.isCmd) && (await taggedShellPane(label)) === null) {
-			actions.push(() => repairShell(label, dir))
-			continue
-		}
-		rt[label].starting = false
+		// or pre-existing session gets startedAt 0 so the boot grace is already satisfied.
+		// This gates lane 1's claude (it boots with the session); lanes >1 gate their own.
+		rt[label] ??= { starting: true, startedAt: 0, lanes: {} }
+		const re = rt[label]
+		re.lanes ??= {} // migrate a flat entry persisted before per-lane rt existed
+		if (re.starting && Date.now() - re.startedAt < READY_MS) continue // let claude boot
+		re.starting = false
 		if (s.desiredSession && /NO DIR/i.test(s.desiredSession)) s.desiredSession = null
 		// Attention is a per-prompt marker now; strip any legacy session-level one.
 		clearAttention(s)
 
-		// Capture what an in-flight command's completion would look like *before*
-		// planQueue mutates markers/timers, so we can clear its done-file afterwards.
-		const cmdSentAtBefore = rt[label].cmdSentAt ?? 0
-		const hadActiveCmd = s.prompts.some((p) => p.isCmd && p.desiredKind === 'EXECUTING')
-		const cmdDoneMtime = readCmdDone(label)
-
-		const dispatches = planQueue(s, rt[label], { now: Date.now(), state: readState(label), cmdDoneMtime })
-
-		if (hadActiveCmd && cmdDoneMtime !== null && cmdDoneMtime > cmdSentAtBefore) rmCmdDone(label)
-		for (const d of dispatches) {
-			if (d.type === 'prompt') actions.push(() => sendLine(label, d.text!, true))
-			else if (d.type === 'cmd') actions.push(() => sendCmd(label, d.text!))
-			else if (d.type === 'clear') actions.push(() => sendLine(label, '/clear', true))
-			else if (d.type === 'show') actions.push(() => showSession(label, d.window))
+		// Plan each lane independently: filtered view + its own done-files + its own rt.
+		// Different lanes advance concurrently, one active item each.
+		for (const n of lanesOf(s)) {
+			re.lanes[n] ??= { sentAt: 0, cmdSentAt: 0, prevPromptCount: lanePromptCount(s, n), starting: false, startedAt: 0 }
+			const lr = re.lanes[n]
+			// Ensure the panes this lane needs exist and can report completion, else create
+			// them and wait (skipped in --dry-run, where panes aren't real).
+			if (!DRY) {
+				// A `:N` lane needs its claude<N> window (n>1; claude1 came with the session).
+				if (n > 1 && laneHasClaude(s, n) && (await paneFor(label, 'claude', n)) === null) {
+					lr.starting = true
+					lr.startedAt = Date.now()
+					actions.push(() => ensurePaneWindow(label, dir, 'claude', n).then(() => {}))
+					continue
+				}
+				if (lr.starting && Date.now() - lr.startedAt < READY_MS) continue // let claude<N> boot
+				lr.starting = false
+				// A `$N` lane isn't ready until it has a *tagged* shell<N> pane — the pane
+				// whose per-shell hook reports completion. Missing ⇒ partial spawn; untagged ⇒
+				// tmux-resurrect stripped HERALD_SHELL/HERALD_PANE (commands would hang at
+				// [EXECUTING]). Either way recreate it (self-heal) before dispatching.
+				if (laneHasShell(s, n) && (await taggedPane(label, 'shell', n)) === null) {
+					actions.push(() => repairShell(label, dir, n))
+					continue
+				}
+			}
+			// Capture what an in-flight command's completion would look like *before*
+			// planQueue mutates markers/timers, so we can clear its done-file afterwards.
+			const cmdSentAtBefore = lr.cmdSentAt
+			const hadActiveCmd = s.prompts.some((p) => p.pane === n && p.isCmd && p.desiredKind === 'EXECUTING')
+			const cmdDoneMtime = readCmdDone(label, n)
+			const dispatches = planQueue(laneView(s, n), lr, { now: Date.now(), state: readState(label, n), cmdDoneMtime })
+			if (hadActiveCmd && cmdDoneMtime !== null && cmdDoneMtime > cmdSentAtBefore) rmCmdDone(label, n)
+			for (const d of dispatches) {
+				if (d.type === 'prompt') actions.push(() => sendLine(label, d.text!, true, n))
+				else if (d.type === 'cmd') actions.push(() => sendCmd(label, d.text!, n))
+				else if (d.type === 'clear') actions.push(() => sendLine(label, '/clear', true, n))
+				else if (d.type === 'show') actions.push(() => showSession(label, d.window))
+			}
 		}
 	}
 
@@ -890,8 +977,7 @@ async function tick(rt: Rt) {
 	for (const label of live) {
 		if (modelLabels.has(label) || RESERVED.has(label)) continue
 		actions.push(() => doKill(label, survivor))
-		rmState(label)
-		rmCmdDone(label)
+		rmAllDoneFiles(label)
 		delete rt[label]
 	}
 

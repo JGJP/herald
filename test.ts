@@ -150,6 +150,57 @@ check(
 )
 check('`:` shorthand round-trips', applyOps(sh.lines, buildOps(sh.sessions)).join('\n') === shorthand)
 
+// 5b'. Numbered/repeated sigils pick the lane (pane): `::`==`:2`, `:::`==`:3`, `$$`==`$2`,
+// `##`==`#2`. Digits win over the repeat count. The spec is stripped from the text, and
+// base `:`/`$`/`#` stay lane 1.
+const panes = parse('alpha\n\t: base\n\t:: two\n\t:3 three\n\t::: also three\n\t$ c1\n\t$$ c2\n\t$3 c3\n\t## barrier2\n')
+const pp = panes.sessions[0].prompts
+check(
+	'sigil runs and digits select the lane, text stripped clean',
+	JSON.stringify(pp.map((p) => [p.isCmd, p.isBarrier, p.pane, p.text])) ===
+		JSON.stringify([
+			[false, false, 1, 'base'],
+			[false, false, 2, 'two'],
+			[false, false, 3, 'three'],
+			[false, false, 3, 'also three'],
+			[true, false, 1, 'c1'],
+			[true, false, 2, 'c2'],
+			[true, false, 3, 'c3'],
+			[false, true, 2, 'barrier2'],
+		]),
+	JSON.stringify(pp.map((p) => [p.isCmd, p.isBarrier, p.pane, p.text])),
+)
+check('numbered/repeated sigils round-trip verbatim', applyOps(panes.lines, buildOps(panes.sessions)).join('\n') === 'alpha\n\t: base\n\t:: two\n\t:3 three\n\t::: also three\n\t$ c1\n\t$$ c2\n\t$3 c3\n\t## barrier2\n')
+check('`prompt:` stays lane 1', parse('alpha\n\tprompt: x\n').sessions[0].prompts[0].pane === 1)
+
+// Two lanes plan independently and run concurrently (mirrors tick()'s per-lane loop:
+// planQueue on each lane's filtered view with its own rt + done-files). Both dispatch on
+// the same tick; lane 2 then completes on its own Stop while lane 1 — given no Stop —
+// stays [EXECUTING]. Neither blocks the other.
+const twoLane = (() => {
+	const { sessions } = parse('alpha\n\t: work one\n\t:2 work two\n')
+	const s = sessions[0]
+	const rt: Record<number, { sentAt: number; cmdSentAt: number; prevPromptCount: number }> = {
+		1: { sentAt: 0, cmdSentAt: 0, prevPromptCount: 1 },
+		2: { sentAt: 0, cmdSentAt: 0, prevPromptCount: 1 },
+	}
+	const plan = (n: number, io: Parameters<typeof planQueue>[2]) => planQueue({ ...s, prompts: s.prompts.filter((p) => p.pane === n) }, rt[n], io)
+	const d1 = plan(1, { now: 100, state: null, cmdDoneMtime: null })
+	const d2 = plan(2, { now: 100, state: null, cmdDoneMtime: null })
+	plan(2, { now: 200, state: { event: 'Stop', mtimeMs: 200 }, cmdDoneMtime: null }) // lane 2's item finishes
+	plan(1, { now: 200, state: null, cmdDoneMtime: null }) // lane 1 gets no Stop, still running
+	const by = (t: string) => s.prompts.find((p) => p.text === t)!
+	return { d1, d2, one: by('work one').desiredKind, two: by('work two').desiredKind }
+})()
+check(
+	'two lanes plan independently and run concurrently',
+	twoLane.d1.some((d) => d.type === 'prompt' && d.text === 'work one') &&
+		twoLane.d2.some((d) => d.type === 'prompt' && d.text === 'work two') &&
+		twoLane.one === 'EXECUTING' &&
+		twoLane.two === 'DONE',
+	JSON.stringify(twoLane),
+)
+
 // 5c. `$` command lines parse as one-shot commands (isCmd) separate from prompts.
 const cmds = 'alpha\n\tprompt: do a\n\t$git status\n\t$pnpm test\n'
 const cm = parse(cmds)
@@ -379,7 +430,7 @@ const showWindowOf = (initial: string): string | undefined => {
 		const active = s.prompts.find((p) => p.desiredKind === 'EXECUTING' || p.desiredKind === 'ATTENTION')
 		const io = { now: clock, state: active && !active.isCmd ? { event: 'Stop', mtimeMs: clock } : null, cmdDoneMtime: active?.isCmd ? clock : null }
 		const show = planQueue(s, rt, io).find((d) => d.type === 'show')
-		if (show) return show.window
+		if (show) return show.window?.kind
 		content = applyOps(lines, buildOps(sessions)).join('\n')
 		if (!active && s.prompts.every((p) => p.desiredKind !== 'EXECUTING')) break
 	}
@@ -391,7 +442,7 @@ check('show with nothing before it defaults to the claude window', showWindowOf(
 
 // A header `!` reveals the frontier item's window: whatever is [EXECUTING] (a command
 // -> shell, a prompt -> claude), else the most recently [DONE] one, else nothing.
-const fw = (s: string) => frontierWindow(parse(s).sessions[0])
+const fw = (s: string) => frontierWindow(parse(s).sessions[0])?.kind
 check('frontier window is the executing command\'s shell', fw('alpha!\n\t$ deploy\n\t\t[EXECUTING]\n') === 'shell', String(fw('alpha!\n\t$ deploy\n\t\t[EXECUTING]\n')))
 check('frontier window is the executing prompt\'s claude', fw('alpha!\n\t: work\n\t\t[EXECUTING]\n') === 'claude', String(fw('alpha!\n\t: work\n\t\t[EXECUTING]\n')))
 check('executing wins over a done item below it', fw('alpha!\n\t: work\n\t\t[EXECUTING]\n\t$ built\n\t\t[DONE]\n') === 'claude', String(fw('alpha!\n\t: work\n\t\t[EXECUTING]\n\t$ built\n\t\t[DONE]\n')))

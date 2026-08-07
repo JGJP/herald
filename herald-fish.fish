@@ -8,5 +8,9 @@ function __herald_cmd_done --on-event fish_postexec
 	test -n "$HERALD_SHELL" -a -n "$HERALD_LABEL"; or return
 	set -l dir $HERALD_STATE
 	test -n "$dir"; or set dir "$HOME/_dev/herald/state"
-	echo $st >"$dir/$HERALD_LABEL.cmd"
+	# HERALD_PANE (set on numbered shells, `$2`/`$$` …) suffixes the done-file so each
+	# lane's shell reports independently; lane 1 (unset) keeps the bare `<label>.cmd`.
+	set -l suffix ""
+	test -n "$HERALD_PANE"; and set suffix ".$HERALD_PANE"
+	echo $st >"$dir/$HERALD_LABEL$suffix.cmd"
 end

@@ -14,15 +14,17 @@ file_extensions:
 
 contexts:
   main:
-    # Human-action barrier: an indented `#` line halts the queue (comment-like).
-    - match: '^\t+[ ]*((#)[^\n]*)$'
+    # Human-action barrier: an indented `#` line halts the queue (comment-like). A run
+    # of `#` or a trailing number (`##`/`#2`) targets that lane's queue.
+    - match: '^\t+[ ]*((#+\d*)[^\n]*)$'
       captures:
         1: comment.line.number-sign.herald
         2: punctuation.definition.comment.herald
 
-    # Prompt: `prompt:` or the `:` shorthand. The whole line is one prompt scope
-    # (sigil + text) so it can be styled as a single unit.
-    - match: '^\t+[ ]*((?i:prompt)?:)'
+    # Prompt: `prompt:` or the `:` shorthand. A run of colons or a trailing number
+    # (`::`/`:2`) selects the lane/pane. The whole line is one prompt scope (sigil +
+    # text) so it can be styled as a single unit.
+    - match: '^\t+[ ]*((?i:prompt)?:+\d*)'
       captures:
         1: keyword.control.prompt.herald
       push:
@@ -30,9 +32,9 @@ contexts:
         - match: $\n?
           pop: true
 
-    # Command: `$` sigil runs in the shell window; the rest is the shell command.
-    # Sigil and text share a contiguous region so a background color has no gaps.
-    - match: '^\t+[ ]*(\$)(.*)$'
+    # Command: `$` sigil runs in the shell window; `$$`/`$2` target lane 2, etc. Sigil
+    # and text share a contiguous region so a background color has no gaps.
+    - match: '^\t+[ ]*(\$+\d*)(.*)$'
       captures:
         1: keyword.operator.command.herald
         2: string.unquoted.command.herald

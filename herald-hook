@@ -6,4 +6,7 @@
 [ -n "$HERALD_LABEL" ] || exit 0
 dir="${HERALD_STATE:-$HOME/_dev/herald/state}"
 mkdir -p "$dir"
-{ printf '{"event":"%s","raw":' "$1"; cat; printf '}\n'; } > "$dir/$HERALD_LABEL.json"
+# HERALD_PANE (set on numbered claude panes, `:2`/`::` …) suffixes the state file so each
+# lane's claude reports independently; lane 1 (unset) keeps the bare `<label>.json`.
+suffix="${HERALD_PANE:+.$HERALD_PANE}"
+{ printf '{"event":"%s","raw":' "$1"; cat; printf '}\n'; } > "$dir/$HERALD_LABEL$suffix.json"

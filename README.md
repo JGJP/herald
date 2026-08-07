@@ -140,6 +140,16 @@ moonbase-2
   that never exits (e.g. a server) stays `[EXECUTING]` and blocks the rest of the
   queue — by design. So e.g. `$git push` placed above `: make the change` runs only
   after that prompt is done.
+- **Lanes / numbered panes.** A number on the sigil routes an item to a parallel lane
+  that runs **concurrently** with the others: `:2` (or `::`) is a prompt in a *second,
+  independent Claude* window; `$2` (or `$$`) a command in a *second shell*; `:::`/`$$$`
+  → lane 3, and so on (repeated sigils count, or write the number — `::`≡`:2`). Base
+  `:`/`$` are lane 1 (unchanged). Within a lane, items still serialize bottom-to-top;
+  **across** lanes they run at once — so a long-running `$2 npm run dev` in lane 2 won't
+  block `$` work in lane 1. Extra windows (`claude2`, `shell2`, …) are created on demand.
+  A `#` barrier is lane-scoped too (`##`/`#2` halts only lane 2). Each lane reports
+  completion via its own done-files (`state/<label>.2.cmd`, etc.). Note: every `:N` lane
+  is a *separate* Claude conversation running concurrently under your account.
 - `#…` lines are **human-action barriers**: a step you must do yourself. When the
   drain reaches one it **stops there** — nothing above it runs, and the `#` line
   never gets a marker — until **you delete the line**. Put one above work that must
@@ -151,11 +161,12 @@ moonbase-2
   deletes the `show` line — a one-shot request, ordered like everything else in the
   queue. If the session isn't running yet it's spawned first, then shown when its
   turn comes.
-- Only the **current** item keeps a marker — it is the *frontier*: items above it
-  (nearer the top) are still pending, items below it have already run. When the
-  next item is marked `[EXECUTING]`, the previous marker is stripped, so at most
-  one marker is ever shown (the active one, or the final `[DONE]` once the queue
-  drains). Delete that final `[DONE]` to re-run the whole queue from the bottom.
+- Only the **current** item **per lane** keeps a marker — it is that lane's *frontier*:
+  items above it (nearer the top) are still pending, items below it have already run.
+  When the next item is marked `[EXECUTING]`, the previous marker is stripped, so each
+  lane shows at most one marker (its active item, or its final `[DONE]` once it drains) —
+  with several lanes you'll see one marker per lane. Delete a final `[DONE]` to re-run
+  that lane's queue from the bottom.
 
 ## What edits do
 
@@ -164,6 +175,7 @@ moonbase-2
 | Add a session (bare name or path; the dir must exist) | Spawns `tmux` session `__<label>` running `claude` in that dir |
 | Add a `prompt:` line | Queues it; sends it to the claude pane when it reaches the front (the item below is done); marks `[EXECUTING]` → `[DONE]` |
 | Add a `$command` line | Queues it; runs it once in the shell window when it reaches the front; marks `[EXECUTING]` → `[DONE]` when it exits |
+| Number a sigil (`:2`/`::`, `$2`/`$$`, `#2`/`##`) | Routes the item to a parallel lane that runs concurrently — a 2nd Claude (`claude2`) / shell (`shell2`), created on demand |
 | Add a `#` line | Halts the queue at that point until you delete the line (a human-action barrier) |
 | Add a `show` line | When the queue reaches it, switches your attached tmux client to this session, then deletes the line |
 | Add a `!` to a session header | Switches your attached tmux client to this session immediately (queue-independent), then strips the `!` |
@@ -217,6 +229,25 @@ moonbase
 Reading bottom-up: commit the current state, let Claude fix the tests, then run
 the suite again. A long-running `$command` (e.g. `$ pnpm dev`) stays `[EXECUTING]`
 and intentionally holds the queue — put it last (top) if you want it to linger.
+
+### Run work in parallel lanes (numbered panes)
+
+Number the sigil to open a concurrent lane. Here lane 2 keeps a dev server running
+(`$$`) and drives a second Claude on the frontend (`::`) while lane 1 works the
+backend — all at once, each in its own window:
+
+```
+moonbase
+	: refactor the API handlers          # lane 1, claude
+		[EXECUTING]
+	$$ pnpm dev                          # lane 2, shell2 — long-running, doesn't block lane 1
+	:: build the settings page           # lane 2, claude2
+		[EXECUTING]
+```
+
+Both `[EXECUTING]` markers are live simultaneously — one per lane. `::` ≡ `:2`,
+`:::` ≡ `:3`, `$$` ≡ `$2`, and so on. The `claude2`/`shell2` windows are created the
+first time a lane needs them. A trailing ` !` on any line reveals *that* lane's pane.
 
 ### Pause for a manual step (`#` barrier)
 

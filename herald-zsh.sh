@@ -7,7 +7,9 @@ if [ -n "$HERALD_SHELL" ] && [ -n "$HERALD_LABEL" ]; then
 	__herald_cmd_done() {
 		local st=$?
 		local dir="${HERALD_STATE:-$HOME/_dev/herald/state}"
-		echo "$st" >"$dir/$HERALD_LABEL.cmd"
+		# HERALD_PANE (set on numbered shells, `$2`/`$$` …) suffixes the done-file so each
+		# lane's shell reports independently; lane 1 (unset) keeps the bare `<label>.cmd`.
+		echo "$st" >"$dir/$HERALD_LABEL${HERALD_PANE:+.$HERALD_PANE}.cmd"
 	}
 	# precmd runs before each prompt (i.e. after each command). Prepend ours so it
 	# captures $? before any other precmd hook can change it.
