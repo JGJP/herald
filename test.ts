@@ -268,6 +268,31 @@ const answered = (() => {
 })()
 check('answering [NEEDS ATTENTION] flips it back to [EXECUTING], then Stop -> [DONE]', answered.flagged && answered.executing && answered.content.includes('[DONE]'), JSON.stringify(answered))
 
+// An explicit `: /clear` prompt clears the conversation without invoking the model,
+// so no Stop event ever arrives. It must still complete (a tick after dispatch) so the
+// drain continues, instead of hanging forever at [EXECUTING]. Note: state is null on
+// every tick — no Stop is ever fed in.
+const clearPrompt = (() => {
+	let content = 'alpha\n\t: after the reset\n\t: /clear\n'
+	const rt = { starting: false, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: 2 }
+	const step = (io: Parameters<typeof planQueue>[2]) => {
+		const { lines, sessions } = parse(content)
+		const d = planQueue(sessions[0], rt, io)
+		content = applyOps(lines, buildOps(sessions)).join('\n')
+		return d
+	}
+	const d1 = step({ now: 100, state: null, cmdDoneMtime: null }) // dispatch /clear (bottom-most)
+	const d2 = step({ now: 200, state: null, cmdDoneMtime: null }) // completes it, drains next
+	return { d1, d2, content }
+})()
+check(
+	'a `: /clear` prompt completes with no Stop event and the drain continues',
+	clearPrompt.d1.some((d) => d.type === 'prompt' && d.text === '/clear') &&
+		clearPrompt.d2.some((d) => d.type === 'prompt' && d.text === 'after the reset') &&
+		clearPrompt.content.includes(': after the reset\n\t\t[EXECUTING]'),
+	JSON.stringify(clearPrompt),
+)
+
 // Deleting all prompts emits a /clear (and only then).
 const clearTest = (() => {
 	const rt = { starting: false, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: 2 }

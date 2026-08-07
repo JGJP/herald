@@ -750,6 +750,13 @@ export function planQueue(s: Session, rt: RtEntry, io: PlanIO): Dispatch[] {
 				active.desiredKind = 'DONE'
 				drainUp(active.lineIdx, active)
 			}
+		} else if (active.text.trim() === '/clear') {
+			// `/clear` clears the conversation without invoking the model, so it never
+			// fires a Stop hook — an explicit `: /clear` queue item would hang forever at
+			// [EXECUTING] waiting for one. It's complete the moment it's been sent (a tick
+			// ago, since dispatch happens below), so mark it done and keep draining.
+			active.desiredKind = 'DONE'
+			drainUp(active.lineIdx, active)
 		} else if (io.state && io.state.event === 'Stop' && io.state.mtimeMs > rt.sentAt) {
 			active.desiredKind = 'DONE'
 			drainUp(active.lineIdx, active)
