@@ -4,8 +4,8 @@
 	"scopeName": "source.herald",
 	"patterns": [
 		{
-			"comment": "Human-action barrier: an indented `#` line halts the queue. `##`/`#2` target a lane.",
-			"match": "^\\t+ *((#+\\d*)[^\\n]*)$",
+			"comment": "Comment: any row starting with `#` (at any indent, incl. column 0) is ignored.",
+			"match": "^\\s*((#)[^\\n]*)$",
 			"captures": {
 				"1": { "name": "comment.line.number-sign.herald" },
 				"2": { "name": "punctuation.definition.comment.herald" }

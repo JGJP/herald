@@ -1,17 +1,17 @@
 " Vim/Neovim syntax for herald `.herald` control files. Grammar mirrors parse() in
 " herald.ts and the Sublime grammar (herald.sublime-syntax): column-0 lines are session
-" headers, tab-indented lines are queue items (prompt / $command / #barrier / show /
+" headers, `#` rows are comments, tab-indented lines are queue items (prompt / $command / show /
 " [status marker]). Status markers are white-on-red (override with `hi heraldStatus …`).
 
 if exists('b:current_syntax')
   finish
 endif
 
-" Session header: a column-0 (non-tab) line. A trailing `!` means "show it now".
-syntax match heraldHeader /^[^\t].*$/ contains=heraldBang
+" Comment: any row starting with `#` (at any indent, incl. column 0) is ignored.
+syntax match heraldComment /^\s*#.*$/
 
-" Human-action barrier (comment-like); a run of `#` or `#2`/`##` targets a lane.
-syntax match heraldBarrier /^\t\+ *#\+\d*.*$/
+" Session header: a column-0 (non-tab, non-`#`) line. A trailing `!` = "show it now".
+syntax match heraldHeader /^[^\t#].*$/ contains=heraldBang
 
 " Prompt: `prompt:` or the `:` shorthand; `::`/`:2` select the lane. Only the sigil is
 " highlighted (\zs starts the match after the indent); the text stays normal.
@@ -31,8 +31,8 @@ syntax match heraldStatus /^\t\+ *\[[^\]]*\]!\=\s*$/ contains=heraldBang
 " A trailing `!` reveal/show-now marker, highlighted within a header or status line.
 syntax match heraldBang /!/ contained
 
+highlight default link heraldComment      Comment
 highlight default link heraldHeader       Identifier
-highlight default link heraldBarrier      Comment
 highlight default link heraldPromptSigil  Statement
 highlight default link heraldCommandSigil Operator
 highlight default link heraldCommandText  String

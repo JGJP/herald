@@ -147,14 +147,12 @@ moonbase-2
   `:`/`$` are lane 1 (unchanged). Within a lane, items still serialize bottom-to-top;
   **across** lanes they run at once — so a long-running `$2 npm run dev` in lane 2 won't
   block `$` work in lane 1. Extra windows (`claude2`, `shell2`, …) are created on demand.
-  A `#` barrier is lane-scoped too (`##`/`#2` halts only lane 2). Each lane reports
-  completion via its own done-files (`state/<label>.2.cmd`, etc.). Note: every `:N` lane
-  is a *separate* Claude conversation running concurrently under your account.
-- `#…` lines are **human-action barriers**: a step you must do yourself. When the
-  drain reaches one it **stops there** — nothing above it runs, and the `#` line
-  never gets a marker — until **you delete the line**. Put one above work that must
-  wait on a manual step (e.g. `# rotate the staging secret`). A `#` at the very
-  bottom blocks the whole session until removed.
+  Each lane reports completion via its own done-files (`state/<label>.2.cmd`, etc.). Note:
+  every `:N` lane is a *separate* Claude conversation running concurrently under your account.
+- `#…` lines are **comments**: any row starting with `#` — at **any** indent, including
+  column 0 — is ignored entirely (never a session, task, or marker) and preserved
+  verbatim. Use them for notes and outlines anywhere in a file. (Only a line that *starts*
+  with `#` is a comment; a trailing `#` is part of a prompt/command's text.)
 - A bare `show` line is a **queue item** that brings the session **on screen**: when
   the drain reaches it (the item below it is done), the supervisor switches your
   attached tmux client (e.g. the terminal you have open in WezTerm) to it, then
@@ -176,7 +174,7 @@ moonbase-2
 | Add a `prompt:` line | Queues it; sends it to the claude pane when it reaches the front (the item below is done); marks `[EXECUTING]` → `[DONE]` |
 | Add a `$command` line | Queues it; runs it once in the shell window when it reaches the front; marks `[EXECUTING]` → `[DONE]` when it exits |
 | Number a sigil (`:2`/`::`, `$2`/`$$`, `#2`/`##`) | Routes the item to a parallel lane that runs concurrently — a 2nd Claude (`claude2`) / shell (`shell2`), created on demand |
-| Add a `#` line | Halts the queue at that point until you delete the line (a human-action barrier) |
+| Add a `#` line (any indent) | Nothing — it's a comment: ignored and preserved verbatim |
 | Add a `show` line | When the queue reaches it, switches your attached tmux client to this session, then deletes the line |
 | Add a `!` to a session header | Switches your attached tmux client to this session immediately (queue-independent), then strips the `!` |
 | Add a space-separated ` !` to any item line (or its marker) | Reveals that item's window immediately — the shell for a `$command`, the claude pane for a prompt — then strips the `!` |
@@ -238,10 +236,11 @@ backend — all at once, each in its own window:
 
 ```
 moonbase
-	: refactor the API handlers          # lane 1, claude
+	# lane 1 works the backend; lane 2 runs a dev server + a frontend Claude
+	: refactor the API handlers
 		[EXECUTING]
-	$$ pnpm dev                          # lane 2, shell2 — long-running, doesn't block lane 1
-	:: build the settings page           # lane 2, claude2
+	$$ pnpm dev
+	:: build the settings page
 		[EXECUTING]
 ```
 
@@ -249,19 +248,22 @@ Both `[EXECUTING]` markers are live simultaneously — one per lane. `::` ≡ `:
 `:::` ≡ `:3`, `$$` ≡ `$2`, and so on. The `claude2`/`shell2` windows are created the
 first time a lane needs them. A trailing ` !` on any line reveals *that* lane's pane.
 
-### Pause for a manual step (`#` barrier)
+### Annotate with comments
+
+Any row starting with `#` — at any indent, including column 0 — is a comment: ignored
+and kept verbatim. Use them for notes or an outline of the work:
 
 ```
+# release checklist — top-level note
 moonbase
-	: deploy to staging
-	# rotate the staging secret, then delete this line
-	: prepare the release branch
-		[DONE]
+	: cut the release branch
+	# reminder: bump the changelog before shipping
+		# sub-notes are fine at any depth
+	: publish the release
 ```
 
-The drain finishes "prepare the release branch", then **stops** at the `#` line —
-nothing above runs until **you delete it**. Use it wherever a human must act
-before Claude continues.
+Only a line that **starts** with `#` is a comment; a trailing `#` stays part of a
+prompt/command's text.
 
 ### Bring a session on screen
 

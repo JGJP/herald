@@ -3,7 +3,7 @@
 Syntax highlighting for herald `.herald` control files.
 
 Highlights session headers, `prompt:` / `:` lines (incl. numbered lanes `::`/`:2`),
-`$command` lines (`$$`/`$2`), `#` barriers (`##`/`#2`), `show`/`!` items, and the
+`$command` lines (`$$`/`$2`), `#` comments (any indent), `show`/`!` items, and the
 controller-written status markers (`[EXECUTING]`, `[DONE]`, `[NEEDS ATTENTION]`, …).
 
 Colors come from your active theme via standard TextMate scopes, so no theme is bundled.

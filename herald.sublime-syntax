@@ -2,7 +2,7 @@
 ---
 # Syntax for herald `.herald` control files. Grammar mirrors parse() in
 # herald.ts: column-0 lines are session headers, tab-indented lines are queue
-# items (prompt / $command / #barrier / show / [status marker]). Scopes map to
+# items (prompt / $command / show / [status marker]); `#` rows are comments. Scopes map to
 # standard TextMate scopes so any color scheme lights them up for free.
 name: herald
 scope: source.herald
@@ -14,9 +14,8 @@ file_extensions:
 
 contexts:
   main:
-    # Human-action barrier: an indented `#` line halts the queue (comment-like). A run
-    # of `#` or a trailing number (`##`/`#2`) targets that lane's queue.
-    - match: '^\t+[ ]*((#+\d*)[^\n]*)$'
+    # Comment: any row starting with `#` (at any indent, incl. column 0) is ignored.
+    - match: '^[ \t]*((#)[^\n]*)$'
       captures:
         1: comment.line.number-sign.herald
         2: punctuation.definition.comment.herald

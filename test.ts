@@ -150,27 +150,26 @@ check(
 )
 check('`:` shorthand round-trips', applyOps(sh.lines, buildOps(sh.sessions)).join('\n') === shorthand)
 
-// 5b'. Numbered/repeated sigils pick the lane (pane): `::`==`:2`, `:::`==`:3`, `$$`==`$2`,
-// `##`==`#2`. Digits win over the repeat count. The spec is stripped from the text, and
-// base `:`/`$`/`#` stay lane 1.
-const panes = parse('alpha\n\t: base\n\t:: two\n\t:3 three\n\t::: also three\n\t$ c1\n\t$$ c2\n\t$3 c3\n\t## barrier2\n')
+// 5b'. Numbered/repeated sigils pick the lane (pane): `::`==`:2`, `:::`==`:3`, `$$`==`$2`.
+// Digits win over the repeat count. The spec is stripped from the text; base `:`/`$` stay
+// lane 1.
+const panes = parse('alpha\n\t: base\n\t:: two\n\t:3 three\n\t::: also three\n\t$ c1\n\t$$ c2\n\t$3 c3\n')
 const pp = panes.sessions[0].prompts
 check(
 	'sigil runs and digits select the lane, text stripped clean',
-	JSON.stringify(pp.map((p) => [p.isCmd, p.isBarrier, p.pane, p.text])) ===
+	JSON.stringify(pp.map((p) => [p.isCmd, p.pane, p.text])) ===
 		JSON.stringify([
-			[false, false, 1, 'base'],
-			[false, false, 2, 'two'],
-			[false, false, 3, 'three'],
-			[false, false, 3, 'also three'],
-			[true, false, 1, 'c1'],
-			[true, false, 2, 'c2'],
-			[true, false, 3, 'c3'],
-			[false, true, 2, 'barrier2'],
+			[false, 1, 'base'],
+			[false, 2, 'two'],
+			[false, 3, 'three'],
+			[false, 3, 'also three'],
+			[true, 1, 'c1'],
+			[true, 2, 'c2'],
+			[true, 3, 'c3'],
 		]),
-	JSON.stringify(pp.map((p) => [p.isCmd, p.isBarrier, p.pane, p.text])),
+	JSON.stringify(pp.map((p) => [p.isCmd, p.pane, p.text])),
 )
-check('numbered/repeated sigils round-trip verbatim', applyOps(panes.lines, buildOps(panes.sessions)).join('\n') === 'alpha\n\t: base\n\t:: two\n\t:3 three\n\t::: also three\n\t$ c1\n\t$$ c2\n\t$3 c3\n\t## barrier2\n')
+check('numbered/repeated sigils round-trip verbatim', applyOps(panes.lines, buildOps(panes.sessions)).join('\n') === 'alpha\n\t: base\n\t:: two\n\t:3 three\n\t::: also three\n\t$ c1\n\t$$ c2\n\t$3 c3\n')
 check('`prompt:` stays lane 1', parse('alpha\n\tprompt: x\n').sessions[0].prompts[0].pane === 1)
 
 // Two lanes plan independently and run concurrently (mirrors tick()'s per-lane loop:
@@ -352,44 +351,29 @@ const clearTest = (() => {
 })()
 check('removing all prompts triggers /clear', JSON.stringify(clearTest) === JSON.stringify([{ type: 'clear' }]), JSON.stringify(clearTest))
 
-// 5d-bis. `#` barrier: a human-action line halts the drain until it's removed.
-const barrierParse = parse('alpha\n\t: newest\n\t# do a manual step\n\t: old\n')
+// 5d-bis. A `#` row is a comment at any indent: ignored (never a prompt/command/task),
+// preserved verbatim, and it does not halt the drain.
+const commentParse = parse('alpha\n\t: newest\n\t# a note\n\t: old\n')
 check(
-	'`#` line parses as a barrier (not a prompt/command)',
-	barrierParse.sessions[0].prompts.length === 3 &&
-		barrierParse.sessions[0].prompts[1].isBarrier === true &&
-		barrierParse.sessions[0].prompts[1].text === 'do a manual step',
-	JSON.stringify(barrierParse.sessions[0].prompts.map((p) => [p.isBarrier, p.text])),
+	'`#` lines are dropped from the queue (comments, not items)',
+	commentParse.sessions[0].prompts.length === 2 &&
+		commentParse.sessions[0].prompts.map((p) => p.text).join(',') === 'newest,old',
+	JSON.stringify(commentParse.sessions[0].prompts.map((p) => p.text)),
 )
-check('`#` barrier round-trips verbatim', applyOps(barrierParse.lines, buildOps(barrierParse.sessions)).join('\n') === 'alpha\n\t: newest\n\t# do a manual step\n\t: old\n')
+check('`#` comment round-trips verbatim', applyOps(commentParse.lines, buildOps(commentParse.sessions)).join('\n') === 'alpha\n\t: newest\n\t# a note\n\t: old\n')
+// Comments at ANY indent (incl. column 0) are ignored, never parsed as sessions.
+const anyIndent = parse('# top-level note\nalpha\n\t: work\n\t\t\t# deeply indented note\n# another\n')
+check('a column-0 `#` is a comment, not a session header', anyIndent.sessions.length === 1 && anyIndent.sessions[0].label === 'alpha')
+check('comments at any indent are dropped and round-trip', anyIndent.sessions[0].prompts.length === 1 && applyOps(anyIndent.lines, buildOps(anyIndent.sessions)).join('\n') === '# top-level note\nalpha\n\t: work\n\t\t\t# deeply indented note\n# another\n')
 
-// The queue drains up to the barrier, then stops: `old` runs, `newest` does not.
-const blocked = drain('alpha\n\t: newest\n\t# do a manual step\n\t: old\n')
-check('drain stops at the `#` barrier (only items below it run)', JSON.stringify(blocked.order) === JSON.stringify(['prompt:old']), JSON.stringify(blocked.order))
-check('barrier leaves the frontier [DONE] below it, never marks the `#` line', blocked.content.includes(': old\n\t\t[DONE]') && blocked.content.includes('# do a manual step') && (blocked.content.match(/\[(EXECUTING|DONE|NEEDS ATTENTION)\]/g) ?? []).length === 1, JSON.stringify(blocked.content))
+// The drain runs the whole queue straight through a `#` comment — it never blocks.
+const throughComment = drain('alpha\n\t: newest\n\t# a note\n\t: old\n')
+check('the drain runs straight through a `#` comment', JSON.stringify(throughComment.order) === JSON.stringify(['prompt:old', 'prompt:newest']), JSON.stringify(throughComment.order))
 
-// Removing the barrier lets the queue continue past it on the next drain.
-const unblocked = drain(blocked.content.replace('\t# do a manual step\n', ''))
-check('removing the `#` barrier releases the rest of the queue', JSON.stringify(unblocked.order) === JSON.stringify(['prompt:newest']), JSON.stringify(unblocked.order))
-
-// A barrier at the very bottom blocks the whole queue (nothing runs).
-const bottomBarrier = drain('alpha\n\t: a\n\t# manual first\n')
-check('a bottom `#` barrier blocks the entire queue', JSON.stringify(bottomBarrier.order) === JSON.stringify([]), JSON.stringify(bottomBarrier.order))
-
-// The spawn gate treats a barrier-blocked session as having nothing to input.
-check('barrier-only next item is not pending input (no spawn)', !hasPendingInput(parse('alpha\n\t: a\n\t# manual first\n').sessions[0]))
-check('a runnable item below a barrier is pending input (spawn)', hasPendingInput(parse('alpha\n\t# manual\n\t: run me\n').sessions[0]))
-
-// A pending /clear (all prompts deleted) is suppressed while a `#` barrier remains,
-// then fires once the barrier is removed (the prompt count stays frozen meanwhile).
-const clearBarrier = (() => {
-	const rt = { starting: false, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: 2 }
-	const held = planQueue(parse('alpha\n\t# manual step\n').sessions[0], rt, { now: 100, state: null, cmdDoneMtime: null })
-	const released = planQueue(parse('alpha\n').sessions[0], rt, { now: 200, state: null, cmdDoneMtime: null })
-	return { held, released }
-})()
-check('a `#` barrier suppresses the /clear', JSON.stringify(clearBarrier.held) === JSON.stringify([]), JSON.stringify(clearBarrier.held))
-check('the /clear fires once the `#` barrier is removed', JSON.stringify(clearBarrier.released) === JSON.stringify([{ type: 'clear' }]), JSON.stringify(clearBarrier.released))
+// The spawn gate ignores comments: a session with only a comment above a task still
+// has pending input; a comment-only session does not.
+check('a task under a comment is pending input (spawn)', hasPendingInput(parse('alpha\n\t# note\n\t: run me\n').sessions[0]))
+check('a comment-only session has nothing to input (no spawn)', !hasPendingInput(parse('alpha\n\t# just a note\n').sessions[0]))
 
 // 5f. A bare `show` line is a queue item (isShow) that switches the tmux client
 // when the drain reaches it. Parsing records it as a non-prompt queue item; it
@@ -449,9 +433,10 @@ check('executing wins over a done item below it', fw('alpha!\n\t: work\n\t\t[EXE
 check('with nothing executing, the last [DONE] wins', fw('alpha!\n\t$ built\n\t\t[DONE]\n') === 'shell', String(fw('alpha!\n\t$ built\n\t\t[DONE]\n')))
 check('frontier window is undefined when nothing has run', fw('alpha!\n\t: pending\n') === undefined, String(fw('alpha!\n\t: pending\n')))
 
-// A `show` sitting above a `#` barrier waits: the barrier halts the drain before it.
-const showBehindBarrier = drain('alpha\n\tshow\n\t# manual\n\t: first\n')
-check('show behind a `#` barrier does not fire', !showBehindBarrier.order.includes('show') && JSON.stringify(showBehindBarrier.order) === JSON.stringify(['prompt:first']), JSON.stringify(showBehindBarrier.order))
+// A `show` above a `#` comment still fires once the drain reaches it — comments don't
+// halt the drain (the item below runs, then the drain continues up past the comment).
+const showThroughComment = drain('alpha\n\tshow\n\t# a note\n\t: first\n')
+check('show above a `#` comment fires (comment does not block)', JSON.stringify(showThroughComment.order) === JSON.stringify(['prompt:first', 'show']), JSON.stringify(showThroughComment.order))
 
 // 5e. Spawn gate: only spawn a session once there's something to input. A bare
 // header (or a fully drained one) has nothing pending, so it stays unspawned.
