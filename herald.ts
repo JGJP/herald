@@ -94,6 +94,11 @@ interface Prompt {
 	// A `$command` line: runs once in the session's shell window, then is marked
 	// [DONE] like a finished prompt. It never enters the claude prompt queue.
 	isCmd: boolean
+	// An indented `#` line: a human-action barrier. It never runs or gets a marker;
+	// when the drain reaches it the queue halts there (in its lane) until the line is
+	// removed. It reads as a comment (comment-scoped, ignored as a task). A column-0
+	// `#` is a plain comment instead — skipped in parse, never a barrier.
+	isBarrier: boolean
 	// The 1-based lane/pane this item belongs to. `:`/`$` are lane 1 (today's single
 	// queue); `:2`/`::`, `$2`/`$$` are lane 2, and so on. Within a lane items serialize
 	// bottom-to-top (claude window for prompts, shell for `$`); different lanes run
@@ -144,6 +149,8 @@ interface Session {
 const PROMPT_RE = /^(?:prompt:|(:+)(\d*))\s*/i
 // A command line starts with `$` (runs in the shell window); `$$`/`$2`→lane 2, etc.
 const CMD_RE = /^(\$+)(\d*)\s*/
+// An indented `#` line is a barrier (halts the drain); `##`/`#2` halt lane 2 only, etc.
+const BARRIER_RE = /^(#+)(\d*)\s*/
 // A sigil run of length `run` (e.g. `::` → 2) or an explicit `digits` suffix (which
 // wins) picks the 1-based lane. `prompt:`/plain sigils fall through to lane 1.
 const paneFromSigil = (run: string | undefined, digits: string | undefined): number => (digits ? Math.max(1, parseInt(digits, 10) || 1) : run ? run.length : 1)
@@ -161,15 +168,11 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i]
 		if (line.trim() === '') continue
-		// A `#` row is a comment at *any* indent: ignored entirely (never a session,
-		// task, or marker) and preserved verbatim, like a blank line. It attaches to the
-		// current session's region so a session marker still lands after it.
-		if (line.trim().startsWith('#')) {
-			if (cur) cur.lastChildIdx = i
-			continue
-		}
 		const tabs = line.match(/^\t*/)?.[0] ?? ''
 		if (tabs.length === 0) {
+			// A column-0 `#` is a plain comment (it sits between sessions, so there is no
+			// queue to halt): ignored and preserved verbatim, like a blank line.
+			if (line.trim().startsWith('#')) continue
 			const raw = line.trim()
 			// A trailing `!` on the header means "show this session immediately".
 			const showNow = raw.endsWith('!')
@@ -213,12 +216,29 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 				marker: null,
 				desiredKind: null,
 				isCmd,
+				isBarrier: false,
 				pane,
 				isShow: false,
 				fired: false,
 				showNow: bang || undefined,
 				showNowInline: bang || undefined,
 				strippedLine: bang ? tabs + body : undefined,
+			})
+		} else if (BARRIER_RE.test(t)) {
+			// An indented `#` line is a human-action barrier that halts its lane's drain.
+			const m = t.match(BARRIER_RE)!
+			cur.prompts.push({
+				text: t.replace(BARRIER_RE, ''),
+				lineIdx: i,
+				order: i,
+				indent: tabs,
+				marker: null,
+				desiredKind: null,
+				isCmd: false,
+				isBarrier: true,
+				pane: paneFromSigil(m[1], m[2]),
+				isShow: false,
+				fired: false,
 			})
 		} else if (/^show$/i.test(t) || t === '!') {
 			// A bare `!` line is shorthand for `show`.
@@ -230,6 +250,7 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 				marker: null,
 				desiredKind: null,
 				isCmd: false,
+				isBarrier: false,
 				pane: 1,
 				isShow: true,
 				fired: false,
@@ -247,7 +268,7 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 						: null
 			// A status marker attaches to the nearest preceding prompt without a
 			// marker; anything unrecognised (e.g. [NO DIR …]) is a session marker.
-			const target = kind ? [...cur.prompts].reverse().find((p) => !p.marker && !p.isShow) : undefined
+			const target = kind ? [...cur.prompts].reverse().find((p) => !p.marker && !p.isBarrier && !p.isShow) : undefined
 			if (kind && target) {
 				target.marker = { kind, lineIdx: i }
 				target.desiredKind = kind
@@ -742,11 +763,12 @@ const frontierIdx = (s: Session): number => {
 }
 
 // Whether a session has a pending item the next tick would dispatch. A bare header
-// (no prompts/commands) or a fully drained one has nothing to input, so we don't spawn a
-// tmux session for it — we only spawn once there's work to feed it.
+// (no prompts/commands), a fully drained one, or one blocked on a `#` barrier has nothing
+// to input, so we don't spawn a tmux session for it — we only spawn once there's work.
 export const hasPendingInput = (s: Session): boolean => {
 	if (s.prompts.some((p) => p.desiredKind === 'EXECUTING' || p.desiredKind === 'ATTENTION')) return true
-	return nearestAbove(s, frontierIdx(s)) !== null
+	const next = nearestAbove(s, frontierIdx(s))
+	return next !== null && !next.isBarrier
 }
 
 // The window used by the last real task before a `show` (the nearest prompt/command
@@ -754,7 +776,7 @@ export const hasPendingInput = (s: Session): boolean => {
 // claude pane when nothing ran before it.
 const lastTaskWindow = (s: Session, showOrder: number): Window => {
 	const below = s.prompts
-		.filter((p) => p.order > showOrder && !p.isShow)
+		.filter((p) => p.order > showOrder && !p.isShow && !p.isBarrier)
 		.sort((a, b) => a.order - b.order)[0]
 	return below ? windowOf(below) : { kind: 'claude', n: 1 }
 }
@@ -776,9 +798,9 @@ export const lanesOf = (s: Session): number[] => [...new Set(s.prompts.map((p) =
 // A lane's own view: only its items. planQueue on this mutates the shared Prompt objects
 // but confines drain/frontier/keepOnly to the lane, so each lane keeps its own marker.
 const laneView = (s: Session, n: number): Session => ({ ...s, prompts: s.prompts.filter((p) => p.pane === n) })
-const laneHasClaude = (s: Session, n: number) => s.prompts.some((p) => p.pane === n && !p.isCmd && !p.isShow)
+const laneHasClaude = (s: Session, n: number) => s.prompts.some((p) => p.pane === n && !p.isCmd && !p.isBarrier && !p.isShow)
 const laneHasShell = (s: Session, n: number) => s.prompts.some((p) => p.pane === n && p.isCmd)
-const lanePromptCount = (s: Session, n: number) => s.prompts.filter((p) => p.pane === n && !p.isCmd && !p.isShow).length
+const lanePromptCount = (s: Session, n: number) => s.prompts.filter((p) => p.pane === n && !p.isCmd && !p.isBarrier && !p.isShow).length
 
 // Only the frontier item keeps a marker: strip every other [EXECUTING]/[DONE].
 const keepOnly = (s: Session, keep: Prompt | null) => {
@@ -793,7 +815,8 @@ const keepOnly = (s: Session, keep: Prompt | null) => {
 // w.r.t. I/O so it can be unit-tested by feeding synthetic events.
 export function planQueue(s: Session, rt: QueueRt, io: PlanIO): Dispatch[] {
 	const out: Dispatch[] = []
-	const promptCount = s.prompts.filter((p) => !p.isCmd && !p.isShow).length
+	const promptCount = s.prompts.filter((p) => !p.isCmd && !p.isBarrier && !p.isShow).length
+	const hasBarrier = s.prompts.some((p) => p.isBarrier)
 
 	const dispatch = (item: Prompt) => {
 		item.desiredKind = 'EXECUTING'
@@ -807,9 +830,9 @@ export function planQueue(s: Session, rt: QueueRt, io: PlanIO): Dispatch[] {
 		keepOnly(s, item)
 	}
 	// Walk up the queue from `cursor` (bottom-to-top): fire and consume any `show`
-	// items instantly (they switch the tmux client, then their line is deleted), until
-	// we reach a real item to dispatch or the top. `hold` (a just-finished item) keeps
-	// the frontier marker if nothing dispatches.
+	// items instantly (they switch the tmux client, then their line is deleted), until we
+	// reach a real item to dispatch, a `#` barrier (halt), or the top. `hold` (a
+	// just-finished item) keeps the frontier marker if nothing dispatches.
 	const drainUp = (cursor: number, hold: Prompt | null) => {
 		for (;;) {
 			const next = nearestAbove(s, cursor)
@@ -819,8 +842,8 @@ export function planQueue(s: Session, rt: QueueRt, io: PlanIO): Dispatch[] {
 				cursor = next.order
 				continue
 			}
-			if (next) dispatch(next)
-			else if (hold) keepOnly(s, hold) // drained: hold the frontier
+			if (next && !next.isBarrier) dispatch(next)
+			else if (hold) keepOnly(s, hold) // drained or barrier ahead: hold the frontier
 			return
 		}
 	}
@@ -851,7 +874,7 @@ export function planQueue(s: Session, rt: QueueRt, io: PlanIO): Dispatch[] {
 			// [EXECUTING]. (A no-op while already executing.)
 			active.desiredKind = 'EXECUTING'
 		}
-	} else if (rt.prevPromptCount >= 1 && promptCount === 0) {
+	} else if (rt.prevPromptCount >= 1 && promptCount === 0 && !hasBarrier) {
 		// Every prompt was deleted: reset the claude conversation.
 		out.push({ type: 'clear' })
 	} else {
@@ -860,7 +883,9 @@ export function planQueue(s: Session, rt: QueueRt, io: PlanIO): Dispatch[] {
 		drainUp(frontierIdx(s), null)
 	}
 
-	rt.prevPromptCount = promptCount
+	// A `#` barrier holds the whole queue, including a pending /clear: keep the prompt
+	// count frozen so the clear still fires once the barrier is removed.
+	if (!(hasBarrier && promptCount === 0)) rt.prevPromptCount = promptCount
 	return out
 }
 

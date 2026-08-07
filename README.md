@@ -150,10 +150,13 @@ moonbase-2
   block `$` work in lane 1. Extra windows (`claude2`, `shell2`, …) are created on demand.
   Each lane reports completion via its own done-files (`state/<label>.2.cmd`, etc.). Note:
   every `:N` lane is a *separate* Claude conversation running concurrently under your account.
-- `#…` lines are **comments**: any row starting with `#` — at **any** indent, including
-  column 0 — is ignored entirely (never a session, task, or marker) and preserved
-  verbatim. Use them for notes and outlines anywhere in a file. (Only a line that *starts*
-  with `#` is a comment; a trailing `#` is part of a prompt/command's text.)
+- `#…` lines are **comments**, and an **indented** one is also a **barrier**: the drain
+  halts when it reaches it (in its lane) until you delete the line — put one below the
+  work you want to stop (the bottom-most item runs first, so a `#` at the very bottom
+  blocks the whole session). A **column-0** `#` is a plain comment (no queue to halt) —
+  handy for notes/outlines between sessions. Either way it's never a session, task, or
+  marker, and round-trips verbatim. (Only a line that *starts* with `#` counts; a trailing
+  `#` is part of a prompt/command's text.)
 - A bare `show` line is a **queue item** that brings the session **on screen**: when
   the drain reaches it (the item below it is done), the supervisor switches your
   attached tmux client (e.g. the terminal you have open in WezTerm) to it, then
@@ -175,7 +178,7 @@ moonbase-2
 | Add a `prompt:` line | Queues it; sends it to the claude pane when it reaches the front (the item below is done); marks `[EXECUTING]` → `[DONE]` |
 | Add a `$command` line | Queues it; runs it once in the shell window when it reaches the front; marks `[EXECUTING]` → `[DONE]` when it exits |
 | Number a sigil (`:2`/`::`, `$2`/`$$`, `#2`/`##`) | Routes the item to a parallel lane that runs concurrently — a 2nd Claude (`claude2`) / shell (`shell2`), created on demand |
-| Add a `#` line (any indent) | Nothing — it's a comment: ignored and preserved verbatim |
+| Add an indented `#` line | Halts the drain there (a barrier / comment) until you delete it; a column-0 `#` is just a comment |
 | Add a `show` line | When the queue reaches it, switches your attached tmux client to this session, then deletes the line |
 | Add a `!` to a session header | Switches your attached tmux client to this session immediately (queue-independent), then strips the `!` |
 | Add a space-separated ` !` to any item line (or its marker) | Reveals that item's window immediately — the shell for a `$command`, the claude pane for a prompt — then strips the `!` |
@@ -249,22 +252,26 @@ Both `[EXECUTING]` markers are live simultaneously — one per lane. `::` ≡ `:
 `:::` ≡ `:3`, `$$` ≡ `$2`, and so on. The `claude2`/`shell2` windows are created the
 first time a lane needs them. A trailing ` !` on any line reveals *that* lane's pane.
 
-### Annotate with comments
+### Comment or block with `#`
 
-Any row starting with `#` — at any indent, including column 0 — is a comment: ignored
-and kept verbatim. Use them for notes or an outline of the work:
+Any row starting with `#` is comment-styled and never runs. A **column-0** `#` is a
+plain note (it sits between sessions). An **indented** `#` is also a **barrier** — the
+drain stops there until you remove it. Since the queue drains bottom-to-top, a `#` below
+an item blocks that item (and everything above it); a `#` at the very bottom freezes the
+whole session:
 
 ```
-# release checklist — top-level note
+# release notes — top-level comment
 moonbase
 	: cut the release branch
-	# reminder: bump the changelog before shipping
-		# sub-notes are fine at any depth
 	: publish the release
+		[EXECUTING]
+	# blocked: waiting on sign-off — delete to continue
 ```
 
-Only a line that **starts** with `#` is a comment; a trailing `#` stays part of a
-prompt/command's text.
+Here `publish the release` is running; the `# blocked` below it stops the drain from
+starting anything else, and once you delete it the queue continues. (Only a line that
+**starts** with `#` counts; a trailing `#` stays part of a prompt/command's text.)
 
 ### Bring a session on screen
 
