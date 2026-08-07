@@ -360,6 +360,18 @@ infra
 A header containing `/` is used as a path (tmux name = its basename); a bare name
 that matches `herald-aliases.yaml` uses the mapped path. See the aliases section.
 
+## Editor syntax highlighting
+
+`.herald` grammars for three editors, all mirroring `parse()` in `herald.ts`:
+
+- **Sublime Text** — `herald.sublime-syntax` (drop into `Packages/User`).
+- **Neovim / Vim** — `editors/nvim/` (`syntax` + `ftdetect` + `ftplugin`). Symlink or
+  copy the three `herald.vim` files into the matching dirs under `~/.config/nvim/`;
+  filetype detection and highlighting then load automatically. Status markers render
+  white-on-red (override with `hi heraldStatus …`).
+- **VS Code** — `editors/vscode/` (a TextMate-grammar extension; colors follow your
+  theme). See its `README.md` to install from source or package a `.vsix`.
+
 ## Notes
 
 - Permissions: launched Claudes inherit your global bypass setting

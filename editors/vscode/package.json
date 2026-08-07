@@ -1,0 +1,35 @@
+{
+	"name": "herald-syntax",
+	"displayName": "herald (.herald)",
+	"description": "Syntax highlighting for herald .herald control files",
+	"version": "0.1.0",
+	"publisher": "herald",
+	"license": "MIT",
+	"engines": {
+		"vscode": "^1.75.0"
+	},
+	"categories": [
+		"Programming Languages"
+	],
+	"contributes": {
+		"languages": [
+			{
+				"id": "herald",
+				"aliases": [
+					"herald"
+				],
+				"extensions": [
+					".herald"
+				],
+				"configuration": "./language-configuration.json"
+			}
+		],
+		"grammars": [
+			{
+				"language": "herald",
+				"scopeName": "source.herald",
+				"path": "./syntaxes/herald.tmLanguage.json"
+			}
+		]
+	}
+}

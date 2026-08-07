@@ -1,0 +1,78 @@
+{
+	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+	"name": "herald",
+	"scopeName": "source.herald",
+	"patterns": [
+		{
+			"comment": "Human-action barrier: an indented `#` line halts the queue. `##`/`#2` target a lane.",
+			"match": "^\\t+ *((#+\\d*)[^\\n]*)$",
+			"captures": {
+				"1": { "name": "comment.line.number-sign.herald" },
+				"2": { "name": "punctuation.definition.comment.herald" }
+			}
+		},
+		{
+			"comment": "Prompt: `prompt:` or the `:` shorthand; `::`/`:2` select the lane/pane.",
+			"match": "^\\t+ *((?i:prompt)?:+\\d*)(.*)$",
+			"captures": {
+				"1": { "name": "keyword.control.prompt.herald" },
+				"2": { "name": "meta.prompt.herald" }
+			}
+		},
+		{
+			"comment": "Command: `$`/`$$`/`$2` runs in the shell window; the rest is the command.",
+			"match": "^\\t+ *(\\$+\\d*)(.*)$",
+			"captures": {
+				"1": { "name": "keyword.operator.command.herald" },
+				"2": { "name": "string.unquoted.command.herald" }
+			}
+		},
+		{
+			"comment": "Show item: a bare `show` (any case) or a bare `!` brings the session on screen.",
+			"match": "^\\t+ *(?i:(show|!))[ ]*$",
+			"captures": {
+				"1": { "name": "keyword.control.show.herald" }
+			}
+		},
+		{
+			"comment": "Status marker: [EXECUTING] (active). A trailing `!` means reveal now.",
+			"match": "^\\t+ *((?i:\\[[^\\]]*executing[^\\]]*\\]))(!)?[ ]*$",
+			"captures": {
+				"1": { "name": "constant.language.executing.herald" },
+				"2": { "name": "keyword.operator.show-now.herald" }
+			}
+		},
+		{
+			"comment": "Status marker: [DONE] (success).",
+			"match": "^\\t+ *((?i:\\[[^\\]]*done[^\\]]*\\]))(!)?[ ]*$",
+			"captures": {
+				"1": { "name": "markup.inserted.done.herald" },
+				"2": { "name": "keyword.operator.show-now.herald" }
+			}
+		},
+		{
+			"comment": "Status marker: [NEEDS ATTENTION] (alarm).",
+			"match": "^\\t+ *((?i:\\[[^\\]]*attention[^\\]]*\\]))(!)?[ ]*$",
+			"captures": {
+				"1": { "name": "invalid.deprecated.attention.herald" },
+				"2": { "name": "keyword.operator.show-now.herald" }
+			}
+		},
+		{
+			"comment": "Any other bracketed marker (e.g. [NO DIR …], [DUPLICATE]) is a session marker.",
+			"match": "^\\t+ *(\\[[^\\n]*\\])(!)?[ ]*$",
+			"captures": {
+				"1": { "name": "invalid.illegal.marker.herald" },
+				"2": { "name": "keyword.operator.show-now.herald" }
+			}
+		},
+		{
+			"comment": "Session header: a column-0 line. A trailing `!` means switch to it now.",
+			"match": "^(?![\\t\\n])([^\\n]*?)[ ]*(!?)[ ]*$",
+			"captures": {
+				"1": { "name": "entity.name.class.herald" },
+				"2": { "name": "keyword.control.show-now.herald" }
+			}
+		}
+	]
+}
