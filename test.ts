@@ -318,6 +318,47 @@ const answered = (() => {
 })()
 check('answering [NEEDS ATTENTION] flips it back to [EXECUTING], then Stop -> [DONE]', answered.flagged && answered.executing && answered.content.includes('[DONE]'), JSON.stringify(answered))
 
+// Pane-busy veto: a Stop that arrives while the claude pane is still working (its "esc to
+// interrupt" hint is up) must NOT complete the prompt. A session that resumes on its own
+// (background task / loop) fires no hook, so the prior turn's Stop would otherwise latch it
+// to [DONE] mid-run. Only once the pane reports idle does the Stop resolve it.
+const busyVeto = (() => {
+	let content = 'alpha\n\t: long task\n'
+	const rt = { starting: false, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: 1 }
+	const step = (io: Parameters<typeof planQueue>[2]) => {
+		const { lines, sessions } = parse(content)
+		planQueue(sessions[0], rt, io)
+		content = applyOps(lines, buildOps(sessions)).join('\n')
+	}
+	step({ now: 100, state: null, cmdDoneMtime: null }) // dispatch
+	step({ now: 200, state: { event: 'Stop', mtimeMs: 200 }, cmdDoneMtime: null, paneBusy: true }) // busy: vetoed
+	const held = content.includes('[EXECUTING]') && !content.includes('[DONE]')
+	step({ now: 300, state: { event: 'Stop', mtimeMs: 200 }, cmdDoneMtime: null, paneBusy: false }) // idle: resolves
+	return { held, content }
+})()
+check('a Stop while the pane is busy is vetoed; it completes only once the pane is idle', busyVeto.held && busyVeto.content.includes('[DONE]'), JSON.stringify(busyVeto))
+
+// Self-resume: a [DONE] frontier whose pane is working again — a background task / loop
+// resumed it, firing no hook — is re-reflected as [EXECUTING], then settles back to [DONE]
+// once the pane goes idle.
+const resume = (() => {
+	let content = 'alpha\n\t: watch the PR\n'
+	const rt = { starting: false, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: 1 }
+	const step = (io: Parameters<typeof planQueue>[2]) => {
+		const { lines, sessions } = parse(content)
+		planQueue(sessions[0], rt, io)
+		content = applyOps(lines, buildOps(sessions)).join('\n')
+	}
+	step({ now: 100, state: null, cmdDoneMtime: null }) // dispatch
+	step({ now: 200, state: { event: 'Stop', mtimeMs: 200 }, cmdDoneMtime: null, paneBusy: false }) // done
+	const done = content.includes('[DONE]')
+	step({ now: 300, state: { event: 'Stop', mtimeMs: 200 }, cmdDoneMtime: null, paneBusy: true }) // resumed
+	const reExecuting = content.includes('[EXECUTING]') && !content.includes('[DONE]')
+	step({ now: 400, state: { event: 'Stop', mtimeMs: 350 }, cmdDoneMtime: null, paneBusy: false }) // idle again
+	return { done, reExecuting, content }
+})()
+check('a self-resumed [DONE] pane re-shows [EXECUTING], then settles back to [DONE]', resume.done && resume.reExecuting && resume.content.includes('[DONE]'), JSON.stringify(resume))
+
 // An explicit `: /clear` prompt clears the conversation without invoking the model,
 // so no Stop event ever arrives. It must still complete (a tick after dispatch) so the
 // drain continues, instead of hanging forever at [EXECUTING]. Note: state is null on

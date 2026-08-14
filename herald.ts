@@ -514,6 +514,22 @@ async function claudePane(label: string, n = 1): Promise<string> {
 }
 const shellPane = (label: string, n = 1) => paneFor(label, 'shell', n)
 
+// Whether the lane's claude pane is mid-turn, read from the live TUI's spinner line:
+// while a turn runs Claude Code pins a `<glyph> <Gerund>… (<elapsed> · …)` status above the
+// input box (e.g. `✳ Sock-hopping… (42s · ↓ 2.7k tokens)`). We anchor on a line that STARTS
+// with a lone spinner glyph whose next token ends in `…(`, which excludes both the idle
+// end-of-turn summary (`✻ Baked for 6m 55s` — no ellipsis/paren) and transcript prose that
+// merely quotes a spinner (an assistant `⏺ …the pane shows Channelling… (18s)` line starts
+// with text, not a lone glyph). The "esc to interrupt" hint is unreliable — it's dropped on
+// extended-thinking turns. true = working, false = idle, null = pane unreadable.
+async function claudeBusy(label: string, n: number): Promise<boolean | null> {
+	const pane = await paneFor(label, 'claude', n)
+	if (pane === null) return null
+	const r = await $({ nothrow: true, quiet: true })`tmux capture-pane -p -t ${pane}`
+	if (r.exitCode !== 0) return null
+	return /^\s*[^\w\s]\s+\S*…\s*\(/m.test(r.stdout)
+}
+
 // The pane *only* if it still carries its @herald tag. A tmux-resurrect restore brings a
 // session back with fresh panes that ran `exec fish` under the session env alone: they
 // lost the per-window HERALD_SHELL=1/HERALD_PANE that make the completion hook fire, and
@@ -745,6 +761,12 @@ export interface PlanIO {
 	now: number
 	state: { event: string; mtimeMs: number } | null
 	cmdDoneMtime: number | null
+	// Live busy state of the lane's claude pane (its active-turn "esc to interrupt" hint):
+	// true = working, false = idle at the prompt, undefined = unknown/unread (tests, or a
+	// `$`-only lane). Authoritative over stale hook events — a session that resumes on its
+	// own (background task / loop / task-notification) fires no hook, so without this the
+	// prior turn's Stop latches it to [DONE] while it's actually still running.
+	paneBusy?: boolean
 }
 
 // Nearest pending item above `idx` in drain order (the next to run, drain being
@@ -849,6 +871,9 @@ export function planQueue(s: Session, rt: QueueRt, io: PlanIO): Dispatch[] {
 	}
 
 	const active = s.prompts.find((p) => p.desiredKind === 'EXECUTING' || p.desiredKind === 'ATTENTION')
+	// The top-most already-run item (the frontier), if any — resurrected below when the
+	// pane is busy again but nothing is marked active.
+	const doneFrontier = s.prompts.filter((p) => p.desiredKind === 'DONE').sort((a, b) => a.order - b.order)[0]
 	if (active) {
 		if (active.isCmd) {
 			if (io.cmdDoneMtime !== null && io.cmdDoneMtime > (rt.cmdSentAt ?? 0)) {
@@ -862,6 +887,11 @@ export function planQueue(s: Session, rt: QueueRt, io: PlanIO): Dispatch[] {
 			// ago, since dispatch happens below), so mark it done and keep draining.
 			active.desiredKind = 'DONE'
 			drainUp(active.order, active)
+		} else if (io.paneBusy === true) {
+			// The pane is actively working — authoritative over stale hook events. Hold at
+			// [EXECUTING]: a resumed turn's earlier Stop must not latch us to [DONE], and a
+			// stale Notification must not flip us to [NEEDS ATTENTION] while Claude runs.
+			active.desiredKind = 'EXECUTING'
 		} else if (io.state && io.state.event === 'Stop' && io.state.mtimeMs > rt.sentAt) {
 			active.desiredKind = 'DONE'
 			drainUp(active.order, active)
@@ -874,6 +904,15 @@ export function planQueue(s: Session, rt: QueueRt, io: PlanIO): Dispatch[] {
 			// [EXECUTING]. (A no-op while already executing.)
 			active.desiredKind = 'EXECUTING'
 		}
+	} else if (io.paneBusy === true && doneFrontier) {
+		// Nothing is marked active, yet the pane is working again: the frontier item went
+		// [DONE] on its Stop, then Claude resumed on its own (a background task / loop /
+		// task-notification — none fire a hook). Re-reflect it as running, and dispatch
+		// nothing into a busy pane. It settles back to [DONE] once the pane goes idle.
+		doneFrontier.desiredKind = 'EXECUTING'
+		keepOnly(s, doneFrontier)
+	} else if (io.paneBusy === true) {
+		// Busy pane but nothing has run yet (e.g. a manual turn): don't feed it a prompt.
 	} else if (rt.prevPromptCount >= 1 && promptCount === 0 && !hasBarrier) {
 		// Every prompt was deleted: reset the claude conversation.
 		out.push({ type: 'clear' })
@@ -994,7 +1033,11 @@ async function tick(rt: Rt) {
 			const cmdSentAtBefore = lr.cmdSentAt
 			const hadActiveCmd = s.prompts.some((p) => p.pane === n && p.isCmd && p.desiredKind === 'EXECUTING')
 			const cmdDoneMtime = readCmdDone(label, n)
-			const dispatches = planQueue(laneView(s, n), lr, { now: Date.now(), state: readState(label, n), cmdDoneMtime })
+			// Poll the claude pane's live busy state (lanes with prompts only; `$`-only lanes
+			// have no claude pane). null (unreadable) ⇒ undefined so the planner falls back to
+			// pure hook-driven behavior rather than acting on a bad read.
+			const paneBusy = !DRY && laneHasClaude(s, n) ? ((await claudeBusy(label, n)) ?? undefined) : undefined
+			const dispatches = planQueue(laneView(s, n), lr, { now: Date.now(), state: readState(label, n), cmdDoneMtime, paneBusy })
 			if (hadActiveCmd && cmdDoneMtime !== null && cmdDoneMtime > cmdSentAtBefore) rmCmdDone(label, n)
 			for (const d of dispatches) {
 				if (d.type === 'prompt') actions.push(() => sendLine(label, d.text!, true, n))
