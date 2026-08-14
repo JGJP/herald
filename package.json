@@ -20,7 +20,6 @@
 		"zx": "8.8.5"
 	},
 	"dependencies": {
-		"neovim": "^5.4.0",
 		"node-diff3": "^3.2.1"
 	}
 }

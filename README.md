@@ -41,7 +41,7 @@ automatically.
 ```sh
 pnpm start            # merge every ./*.herald file and reconcile each second
 pnpm start --dry-run  # log intended tmux actions / rewrites without doing them
-pnpm herald           # edit .herald in a live Neovim (see below)
+pnpm herald           # edit .herald in the built-in live editor (see below)
 pnpm herald work.herald  # …or edit a specific control file
 ```
 
@@ -72,12 +72,12 @@ When Claude finishes, the line flips to `[DONE]`. Queue more work by adding line
 
 ## Editing live (`pnpm herald`)
 
-`pnpm herald [file]` opens a `.herald` control file (default `.herald`) in **real
-Neovim** (your own config and keybindings) while the supervisor keeps writing to
-the same file. Pass a filename to edit a specific one. A small sidecar
-attached over nvim's RPC socket folds the controller's out-of-band writes (marker
-updates, drained `show` lines, …) into your buffer **without disturbing what you're
-typing**:
+`pnpm herald [file]` opens a `.herald` control file (default `.herald`) in a
+**built-in, vim-like editor** — a self-contained modal TUI (no external editor
+process) with `.herald` syntax highlighting. Pass a filename to edit a specific one.
+While you type, the supervisor keeps writing to the same file; the editor folds the
+controller's out-of-band writes (marker updates, drained `show` lines, …) into your
+buffer **without disturbing what you're typing**:
 
 - It only touches the buffer while you're idle in **normal mode**, so keystrokes are
   never lost — a pending update lands the moment you leave insert.
@@ -85,8 +85,20 @@ typing**:
 - With **unsaved edits**, it 3-way merges the controller's change into your buffer
   (your line wins on a genuine conflict) and keeps the cursor on the line you were on.
 
-Save with `:w` as usual — the display and file are then in sync. Requires `nvim` on
-your `PATH`; respects `HERALD_FILE`. Runs alongside `pnpm start` (that's the point).
+Save with `:w`; quit with `:q` (`:wq`/`:x` to do both). It needs an interactive
+terminal and respects `HERALD_FILE`. Runs alongside `pnpm start` (that's the point).
+
+**Keys** (a practical vim subset):
+
+- **Modes** — `i a I A o O` enter insert; `Esc` returns to normal; `v` / `V` start
+  charwise / linewise visual; `:` ex command; `/` search.
+- **Motions** — `h j k l` (and arrows), `w b e`, `0 ^ $`, `gg G`, `f F t T <char>`,
+  `Ctrl-d`/`Ctrl-u`/`Ctrl-f`/`Ctrl-b` to scroll; any motion takes a `{count}` prefix.
+- **Edits** — `x` delete char, `r` replace char, `s`/`S`, `D`/`C`, `dd cc yy`,
+  operators `d c y` + a motion (e.g. `dw`, `c$`, `y2j`), `p`/`P` paste,
+  `u` undo, `Ctrl-r` redo. In visual mode `d y c x` act on the selection.
+- **Ex** — `:w` `:q` `:wq` `:x` `:q!` and `:{number}` to jump to a line;
+  `/text` then `n`/`N` to search.
 
 ## The `.herald` files
 
