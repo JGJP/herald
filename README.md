@@ -386,7 +386,9 @@ that matches `herald-aliases.yaml` uses the mapped path. See the aliases section
 
 `.herald` grammars for three editors, all mirroring `parse()` in `herald.ts`:
 
-- **Sublime Text** — `herald.sublime-syntax` (drop into `Packages/User`).
+- **Sublime Text** — `herald.sublime-syntax` (drop into `Packages/User`). Drop
+  `herald.tmPreferences` in alongside it so `toggle_comment` (`Cmd`/`Ctrl`+`/`)
+  comments rows out with `#`.
 - **Neovim / Vim** — `editors/nvim/` (`syntax` + `ftdetect` + `ftplugin`). Symlink or
   copy the three `herald.vim` files into the matching dirs under `~/.config/nvim/`;
   filetype detection and highlighting then load automatically. Status markers render
