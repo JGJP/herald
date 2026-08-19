@@ -4,3 +4,4 @@ herald-control
 *.herald
 herald-actions
 herald-aliases.yaml
+herald-macros.yaml

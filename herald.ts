@@ -70,6 +70,53 @@ function loadAliases(): Aliases {
 	}
 }
 
+// Optional YAML file of `name: |<multiline block>` macros. A `@name` line in a `.herald`
+// file is one queue item that expands IN MEMORY to that block's steps (see macroSteps).
+const MACROS_FILE = process.env.HERALD_MACROS ? resolve(process.env.HERALD_MACROS) : join(HERE, 'herald-macros.yaml')
+export type Macros = Record<string, string>
+
+// Load the `@name`→block macro map, tolerating a missing/empty/malformed file.
+function loadMacros(): Macros {
+	try {
+		const parsed = YAML.parse(readFileSync(MACROS_FILE, 'utf8'))
+		if (!parsed || typeof parsed !== 'object') return {}
+		const out: Macros = {}
+		for (const [k, v] of Object.entries(parsed)) if (typeof v === 'string') out[k] = v
+		return out
+	} catch {
+		return {}
+	}
+}
+
+// One runnable line of a macro's body, args already filled: a claude prompt, or (with a `$`
+// sigil) a shell command. `#` comment lines are dropped when building these.
+export interface MacroStep {
+	text: string
+	isCmd: boolean
+}
+// A `@<name> [args…]` line (any indent) is a macro call: one queue item whose body expands
+// IN MEMORY to a sequence of steps run one at a time, while the file keeps the `@name` line
+// and gets a single overall marker. `{0}`,`{1}`,… are the positional args (0-based;
+// quote-aware so `"two words"` is one arg), `{*}` is all of them space-joined, a missing one
+// is blank. Braces avoid clashing with herald's own `$N`/`:N` lane sigils. A name char must
+// follow the `@`, so a body line like `@@@…` never matches.
+const MACRO_RE = /^([ \t]*)@([\w-]+)(?:[ \t]+(.*\S))?[ \t]*$/
+const macroArgs = (s: string): string[] => (s.match(/"[^"]*"|\S+/g) ?? []).map((a) => (a.startsWith('"') && a.endsWith('"') ? a.slice(1, -1) : a))
+const fillArgs = (text: string, args: string[]): string => text.replace(/\{\*\}/g, args.join(' ')).replace(/\{(\d+)\}/g, (_, d) => args[+d] ?? '')
+// Expand a macro body into steps, in RUN order: fill args, drop blank and `#` comment lines,
+// classify each remaining line as a `$`command or a prompt, and reverse so they run
+// bottom-to-top like every other herald queue (the body's last line runs first). A step's
+// own lane sigil is ignored — the steps run in the macro item's own lane.
+export function macroSteps(body: string, args: string[]): MacroStep[] {
+	return body
+		.replace(/\n+$/, '')
+		.split('\n')
+		.map((b) => fillArgs(b, args).trim())
+		.filter((b) => b !== '' && !BARRIER_RE.test(b))
+		.map((b) => (CMD_RE.test(b) ? { text: b.replace(CMD_RE, ''), isCmd: true } : { text: b.replace(PROMPT_RE, ''), isCmd: false }))
+		.reverse()
+}
+
 // ---------------------------------------------------------------- parse model
 
 type Kind = 'EXECUTING' | 'DONE' | 'ATTENTION'
@@ -83,6 +130,10 @@ interface Prompt {
 	// Position in this item's own file (what buildOps rewrites). Distinct from `order`
 	// so a label merged across files still writes each marker back to the right file.
 	lineIdx: number
+	// The last line this item spans: its own line, or the last of the deeper-indented
+	// continuation lines that form its multiline body. The status marker is inserted after
+	// this (below the body), not right under the prompt line.
+	bodyEndIdx: number
 	// The item's place in the drain order. For a single-file session this equals
 	// `lineIdx`; when a label is merged across files, mergeSessions renumbers it so every
 	// file's rows form one bottom-to-top queue. The queue logic orders by this, never by
@@ -99,6 +150,11 @@ interface Prompt {
 	// removed. It reads as a comment (comment-scoped, ignored as a task). A column-0
 	// `#` is a plain comment instead — skipped in parse, never a barrier.
 	isBarrier: boolean
+	// A `@name` macro call: one queue item whose `steps` (the expanded, arg-filled body)
+	// run in sequence in this lane. The runtime's `macroStep` cursor tracks which is
+	// current; the item carries a single overall marker (the file keeps the `@name` line).
+	isMacro?: boolean
+	steps?: MacroStep[]
 	// The 1-based lane/pane this item belongs to. `:`/`$` are lane 1 (today's single
 	// queue); `:2`/`::`, `$2`/`$$` are lane 2, and so on. Within a lane items serialize
 	// bottom-to-top (claude window for prompts, shell for `$`); different lanes run
@@ -124,6 +180,11 @@ interface Prompt {
 interface Session {
 	label: string
 	dir: string
+	// Set when this session is a git worktree of another repo (an indented, non-sigil line
+	// under a header): the repo `dir` was worktree'd from. Its `dir` (under
+	// `<repo>/../<repo>-worktrees/<name>`) is created on demand — `git worktree add --detach` — the
+	// first tick the worktree has work, then spawned like any session.
+	worktreeBase?: string
 	headerIdx: number
 	lastChildIdx: number
 	prompts: Prompt[]
@@ -159,17 +220,24 @@ const clearAttention = (s: Session) => {
 	if (isAttention(s.desiredSession)) s.desiredSession = null
 }
 
-export function parse(content: string, aliases: Aliases = {}): { lines: string[]; sessions: Session[] } {
+export function parse(content: string, aliases: Aliases = {}, macros: Macros = {}): { lines: string[]; sessions: Session[] } {
 	const lines = content.split('\n')
 	// The whole file is the sessions region; keep your backlog/footer in other
 	// files. Blank lines are skipped, so nothing else is preserved verbatim.
 	const sessions: Session[] = []
 	let cur: Session | null = null
+	// The prompt/command a deeper-indented line would continue. Set right after a `:`/`$`
+	// line, cleared by anything else (header, marker, barrier, blank-separated item).
+	let lastPrompt: Prompt | null = null
+	// The enclosing repo/worktree stack (by indent). Queue items attach to the deepest one
+	// they sit under; a non-sigil line opens a new worktree container. Reset per header.
+	let containers: { indent: number; session: Session }[] = []
 	for (let i = 0; i < lines.length; i++) {
 		const line = lines[i]
 		if (line.trim() === '') continue
 		const tabs = line.match(/^\t*/)?.[0] ?? ''
 		if (tabs.length === 0) {
+			lastPrompt = null
 			// A column-0 `#` is a plain comment (it sits between sessions, so there is no
 			// queue to halt): ignored and preserved verbatim, like a blank line.
 			if (line.trim().startsWith('#')) continue
@@ -191,12 +259,47 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 				showNowFired: false,
 			}
 			sessions.push(cur)
+			containers = [{ indent: 0, session: cur }]
 			continue
 		}
 		if (!cur) continue
 		cur.lastChildIdx = i
 		const t = line.trim()
-		if (PROMPT_RE.test(t) || CMD_RE.test(t)) {
+		// A line indented deeper than the prompt above it continues that prompt's text — a
+		// multiline body (e.g. a pasted error). Controller-written markers are deeper too,
+		// so exclude those; everything else folds in and is sent as one multiline prompt.
+		if (lastPrompt && tabs.length > lastPrompt.indent.length && !/^\[.*\]!?$/.test(t)) {
+			lastPrompt.text += `\n${t}`
+			lastPrompt.bodyEndIdx = i
+			continue
+		}
+		lastPrompt = null
+		// Route this line to its container — the deepest repo/worktree it sits under. A
+		// deeper indent nests; a shallower/equal one pops back out to an ancestor.
+		const d = tabs.length
+		while (containers.length > 1 && containers[containers.length - 1].indent >= d) containers.pop()
+		const target = containers[containers.length - 1].session
+		const macroMatch = t.match(MACRO_RE)
+		if (macroMatch && macros[macroMatch[2]] !== undefined) {
+			// A `@name [args]` call: one item whose body expands in memory to `steps`. The
+			// file keeps this line; buildOps writes a single overall marker below it.
+			target.prompts.push({
+				text: t,
+				lineIdx: i,
+				bodyEndIdx: i,
+				order: i,
+				indent: tabs,
+				marker: null,
+				desiredKind: null,
+				isCmd: false,
+				isBarrier: false,
+				pane: 1,
+				isShow: false,
+				fired: false,
+				isMacro: true,
+				steps: macroSteps(macros[macroMatch[2]], macroMatch[3] ? macroArgs(macroMatch[3]) : []),
+			})
+		} else if (PROMPT_RE.test(t) || CMD_RE.test(t)) {
 			// A space-separated trailing `!` on a prompt or `$command` line means "reveal
 			// this item's window now" (the shell for a command, the claude pane
 			// otherwise), just like `!` on its marker. The space keeps ordinary end
@@ -208,9 +311,10 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 			const pane = paneFromSigil(m[1], m[2])
 			const bang = /\s!$/.test(t)
 			const body = bang ? t.slice(0, -1).trimEnd() : t
-			cur.prompts.push({
+			const item: Prompt = {
 				text: body.replace(re, ''),
 				lineIdx: i,
+				bodyEndIdx: i,
 				order: i,
 				indent: tabs,
 				marker: null,
@@ -223,13 +327,17 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 				showNow: bang || undefined,
 				showNowInline: bang || undefined,
 				strippedLine: bang ? tabs + body : undefined,
-			})
+			}
+			target.prompts.push(item)
+			// Only a `:`/`$` item takes a multiline body; markers/barriers/shows do not.
+			lastPrompt = item
 		} else if (BARRIER_RE.test(t)) {
 			// An indented `#` line is a human-action barrier that halts its lane's drain.
 			const m = t.match(BARRIER_RE)!
-			cur.prompts.push({
+			target.prompts.push({
 				text: t.replace(BARRIER_RE, ''),
 				lineIdx: i,
+				bodyEndIdx: i,
 				order: i,
 				indent: tabs,
 				marker: null,
@@ -242,9 +350,10 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 			})
 		} else if (/^show$/i.test(t) || t === '!') {
 			// A bare `!` line is shorthand for `show`.
-			cur.prompts.push({
+			target.prompts.push({
 				text: '',
 				lineIdx: i,
+				bodyEndIdx: i,
 				order: i,
 				indent: tabs,
 				marker: null,
@@ -266,17 +375,36 @@ export function parse(content: string, aliases: Aliases = {}): { lines: string[]
 					: /done/i.test(body)
 						? 'DONE'
 						: null
-			// A status marker attaches to the nearest preceding prompt without a
-			// marker; anything unrecognised (e.g. [NO DIR …]) is a session marker.
-			const target = kind ? [...cur.prompts].reverse().find((p) => !p.marker && !p.isBarrier && !p.isShow) : undefined
-			if (kind && target) {
-				target.marker = { kind, lineIdx: i }
-				target.desiredKind = kind
-				if (bang) target.showNow = true
+			// A status marker attaches to the nearest preceding prompt (in this container)
+			// without a marker; anything unrecognised (e.g. [NO DIR …]) is a session marker.
+			const owner = kind ? [...target.prompts].reverse().find((p) => !p.marker && !p.isBarrier && !p.isShow) : undefined
+			if (kind && owner) {
+				owner.marker = { kind, lineIdx: i }
+				owner.desiredKind = kind
+				if (bang) owner.showNow = true
 			} else {
-				cur.sessionMarker = { text: body, lineIdx: i }
-				cur.desiredSession = body
+				target.sessionMarker = { text: body, lineIdx: i }
+				target.desiredSession = body
 			}
+		} else {
+			// A non-sigil indented line names a git worktree of its container's repo. It's a
+			// child session whose dir (<repo>/../<repo>-worktrees/<name>) is created on demand — only
+			// once it has queued work below it; an empty one is just an inert note.
+			const wt: Session = {
+				label: t,
+				dir: join(dirname(target.dir), `${basename(target.dir)}-worktrees`, t),
+				worktreeBase: target.dir,
+				headerIdx: i,
+				lastChildIdx: i,
+				prompts: [],
+				sessionMarker: null,
+				desiredSession: null,
+				header: t,
+				showNow: false,
+				showNowFired: false,
+			}
+			sessions.push(wt)
+			containers.push({ indent: d, session: wt })
 		}
 	}
 	return { lines, sessions }
@@ -308,7 +436,7 @@ export function buildOps(sessions: Session[]): Op[] {
 				if (p.desiredKind === null) ops.push({ pos: p.marker.lineIdx, type: 'delete' })
 				else ops.push({ pos: p.marker.lineIdx, type: 'replace', text: `${p.indent}\t${MARKER[p.desiredKind]}` })
 			} else if (p.desiredKind !== null) {
-				ops.push({ pos: p.lineIdx, type: 'insert', text: `${p.indent}\t${MARKER[p.desiredKind]}` })
+				ops.push({ pos: p.bodyEndIdx, type: 'insert', text: `${p.indent}\t${MARKER[p.desiredKind]}` })
 			}
 		}
 		// A fired "show now" (`!` header) is consumed by stripping the `!`.
@@ -380,13 +508,16 @@ interface LaneRt {
 	// newer than this to count as finished.
 	cmdSentAt: number
 	prevPromptCount: number
+	// Cursor into the active macro item's steps (which one is running). Only one item is
+	// active per lane, so a single cursor suffices; persisted so a macro resumes mid-run.
+	macroStep?: number
 	// A lane whose claude pane was just created boots before it can take prompts
 	// (n>1 only; lane 1's claude boots with the session, gated by RtEntry.starting).
 	starting: boolean
 	startedAt: number
 }
 // The subset planQueue itself touches — lets tests pass a plain object.
-type QueueRt = Pick<LaneRt, 'sentAt' | 'cmdSentAt' | 'prevPromptCount'>
+type QueueRt = Pick<LaneRt, 'sentAt' | 'cmdSentAt' | 'prevPromptCount' | 'macroStep'>
 interface RtEntry {
 	starting: boolean
 	startedAt: number
@@ -559,7 +690,15 @@ async function typeInto(pane: string, text: string, vimInsert = false) {
 		await tm`tmux send-keys -t ${pane} i`
 		await sleep(80)
 	}
-	await tm`tmux send-keys -t ${pane} -l -- ${text}`
+	if (text.includes('\n')) {
+		// A multiline prompt (a `:` line plus its deeper-indented body) can't go through
+		// send-keys — the first newline would submit it. Bracketed paste (`-p`) delivers the
+		// whole block as one paste, so Claude inserts the newlines as input; then Enter sends.
+		await tm`tmux set-buffer -b herald -- ${text}`
+		await tm`tmux paste-buffer -p -d -b herald -t ${pane}`
+	} else {
+		await tm`tmux send-keys -t ${pane} -l -- ${text}`
+	}
 	await sleep(120)
 	await tm`tmux send-keys -t ${pane} Enter`
 }
@@ -637,6 +776,21 @@ async function doSpawn(label: string, dir: string) {
 	// session that blocks command dispatch. Warn loudly (the readiness gate repairs it).
 	const roles = await taggedRoles(label)
 	if (!roles.has('claude') || !roles.has('shell')) log(`WARN incomplete spawn of ${T(label)} (tagged: ${[...roles].join(',') || 'none'})`)
+}
+
+// Create a detached-HEAD git worktree of `base` at `dir` (its parent dirs made first), then
+// spawn the session in it. Runs once, the first tick a worktree session has work.
+async function addWorktreeAndSpawn(label: string, base: string, dir: string) {
+	log(`worktree add ${dir} (from ${base})`)
+	if (DRY) return
+	const tm = $({ nothrow: true, quiet: true })
+	await tm`mkdir -p ${dirname(dir)}`
+	const r = await tm`git -C ${base} worktree add --detach ${dir}`
+	if (r.exitCode !== 0) {
+		log(`WARN worktree add failed for ${T(label)}: ${r.stderr.trim()}`)
+		return
+	}
+	await doSpawn(label, dir)
 }
 
 // Recreate lane `n`'s shell window so command completion is reported again. Two cases:
@@ -820,9 +974,14 @@ export const lanesOf = (s: Session): number[] => [...new Set(s.prompts.map((p) =
 // A lane's own view: only its items. planQueue on this mutates the shared Prompt objects
 // but confines drain/frontier/keepOnly to the lane, so each lane keeps its own marker.
 const laneView = (s: Session, n: number): Session => ({ ...s, prompts: s.prompts.filter((p) => p.pane === n) })
-const laneHasClaude = (s: Session, n: number) => s.prompts.some((p) => p.pane === n && !p.isCmd && !p.isBarrier && !p.isShow)
-const laneHasShell = (s: Session, n: number) => s.prompts.some((p) => p.pane === n && p.isCmd)
-const lanePromptCount = (s: Session, n: number) => s.prompts.filter((p) => p.pane === n && !p.isCmd && !p.isBarrier && !p.isShow).length
+// A macro item needs a claude pane if any step is a prompt, a shell pane if any is a `$`.
+const macroHasClaude = (p: Prompt) => !!p.isMacro && p.steps!.some((st) => !st.isCmd)
+const macroHasShell = (p: Prompt) => !!p.isMacro && p.steps!.some((st) => st.isCmd)
+// Whether an item feeds the claude pane: a plain prompt, or a macro with a prompt step.
+const isClaudeItem = (p: Prompt) => (p.isMacro ? macroHasClaude(p) : !p.isCmd && !p.isBarrier && !p.isShow)
+const laneHasClaude = (s: Session, n: number) => s.prompts.some((p) => p.pane === n && isClaudeItem(p))
+const laneHasShell = (s: Session, n: number) => s.prompts.some((p) => p.pane === n && (p.isMacro ? macroHasShell(p) : p.isCmd))
+const lanePromptCount = (s: Session, n: number) => s.prompts.filter((p) => p.pane === n && isClaudeItem(p)).length
 
 // Only the frontier item keeps a marker: strip every other [EXECUTING]/[DONE].
 const keepOnly = (s: Session, keep: Prompt | null) => {
@@ -837,12 +996,26 @@ const keepOnly = (s: Session, keep: Prompt | null) => {
 // w.r.t. I/O so it can be unit-tested by feeding synthetic events.
 export function planQueue(s: Session, rt: QueueRt, io: PlanIO): Dispatch[] {
 	const out: Dispatch[] = []
-	const promptCount = s.prompts.filter((p) => !p.isCmd && !p.isBarrier && !p.isShow).length
+	const promptCount = s.prompts.filter((p) => isClaudeItem(p)).length
 	const hasBarrier = s.prompts.some((p) => p.isBarrier)
 
+	// Send one macro step: a `$` step to the shell, else a prompt to claude (own timer each).
+	const emitStep = (step: MacroStep) => {
+		if (step.isCmd) {
+			rt.cmdSentAt = io.now
+			out.push({ type: 'cmd', text: step.text })
+		} else {
+			rt.sentAt = io.now
+			out.push({ type: 'prompt', text: step.text })
+		}
+	}
 	const dispatch = (item: Prompt) => {
 		item.desiredKind = 'EXECUTING'
-		if (item.isCmd) {
+		if (item.isMacro) {
+			rt.macroStep = 0
+			if (item.steps!.length === 0) item.desiredKind = 'DONE' // nothing runnable (all comments)
+			else emitStep(item.steps![0])
+		} else if (item.isCmd) {
 			rt.cmdSentAt = io.now
 			out.push({ type: 'cmd', text: item.text })
 		} else {
@@ -875,7 +1048,32 @@ export function planQueue(s: Session, rt: QueueRt, io: PlanIO): Dispatch[] {
 	// pane is busy again but nothing is marked active.
 	const doneFrontier = s.prompts.filter((p) => p.desiredKind === 'DONE').sort((a, b) => a.order - b.order)[0]
 	if (active) {
-		if (active.isCmd) {
+		if (active.isMacro) {
+			// A macro runs its steps in sequence, holding [EXECUTING] across them; only the
+			// last step's completion advances the item to [DONE]. `rt.macroStep` (persisted
+			// per lane) is the cursor, so this resumes correctly across ticks and restarts.
+			const step = active.steps![rt.macroStep ?? 0]
+			const advance = () => {
+				const next = (rt.macroStep ?? 0) + 1
+				if (next < active.steps!.length) {
+					rt.macroStep = next
+					active.desiredKind = 'EXECUTING'
+					emitStep(active.steps![next])
+				} else {
+					rt.macroStep = 0
+					active.desiredKind = 'DONE'
+					drainUp(active.order, active)
+				}
+			}
+			if (!step) advance()
+			else if (step.isCmd) {
+				if (io.cmdDoneMtime !== null && io.cmdDoneMtime > (rt.cmdSentAt ?? 0)) advance()
+			} else if (step.text.trim() === '/clear') advance()
+			else if (io.paneBusy === true) active.desiredKind = 'EXECUTING'
+			else if (io.state && io.state.event === 'Stop' && io.state.mtimeMs > rt.sentAt) advance()
+			else if (io.state && io.state.event === 'Notification' && io.state.mtimeMs > rt.sentAt) active.desiredKind = 'ATTENTION'
+			else if (io.state && io.state.event === 'UserPromptSubmit' && io.state.mtimeMs > rt.sentAt) active.desiredKind = 'EXECUTING'
+		} else if (active.isCmd) {
 			if (io.cmdDoneMtime !== null && io.cmdDoneMtime > (rt.cmdSentAt ?? 0)) {
 				active.desiredKind = 'DONE'
 				drainUp(active.order, active)
@@ -939,6 +1137,7 @@ interface Control {
 async function tick(rt: Rt) {
 	const live = await listTmux()
 	const aliases = loadAliases()
+	const macros = loadMacros()
 	// Read + parse every `.herald` file. Each file's sessions carry line indices into
 	// that file's own `lines`, so markers are written back to the file they came from.
 	const files = controlFiles()
@@ -948,8 +1147,10 @@ async function tick(rt: Rt) {
 	if (files.length === 0) return
 	const controls: Control[] = files.map((path) => {
 		const mtime = safeMtime(path)
+		// Macros expand IN MEMORY inside parse (the `@name` line stays in the file); only the
+		// single overall marker is ever written back.
 		const content = readFileSync(path, 'utf8')
-		const { lines, sessions } = parse(content, aliases)
+		const { lines, sessions } = parse(content, aliases, macros)
 		return { path, content, lines, sessions, mtime }
 	})
 	// Merge into one global session list; the first file (alphabetical) to claim a
@@ -962,6 +1163,19 @@ async function tick(rt: Rt) {
 		if (RESERVED.has(label)) continue
 		const dir = s.dir
 		if (!existsSync(dir)) {
+			// A worktree session's dir doesn't exist until we create it — and only once it has
+			// work (like any spawn). Its base repo must exist and be a git repo.
+			if (s.worktreeBase) {
+				if (!hasPendingInput(s) && !s.showNow) continue
+				if (!existsSync(join(s.worktreeBase, '.git'))) {
+					log(`worktree ${T(label)}: base ${s.worktreeBase} is not a git repo, skipping`)
+					continue
+				}
+				rt[label] = { starting: true, startedAt: Date.now(), lanes: {} }
+				const base = s.worktreeBase
+				actions.push(() => addWorktreeAndSpawn(label, base, dir))
+				continue
+			}
 			s.desiredSession = `[NO DIR ${dir}]`
 			continue
 		}
@@ -1005,7 +1219,7 @@ async function tick(rt: Rt) {
 		// Plan each lane independently: filtered view + its own done-files + its own rt.
 		// Different lanes advance concurrently, one active item each.
 		for (const n of lanesOf(s)) {
-			re.lanes[n] ??= { sentAt: 0, cmdSentAt: 0, prevPromptCount: lanePromptCount(s, n), starting: false, startedAt: 0 }
+			re.lanes[n] ??= { sentAt: 0, cmdSentAt: 0, prevPromptCount: lanePromptCount(s, n), macroStep: 0, starting: false, startedAt: 0 }
 			const lr = re.lanes[n]
 			// Ensure the panes this lane needs exist and can report completion, else create
 			// them and wait (skipped in --dry-run, where panes aren't real).

@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-import { applyOps, buildOps, frontierWindow, hasPendingInput, mergeSessions, parse, planQueue } from './herald'
+import { applyOps, buildOps, frontierWindow, hasPendingInput, macroSteps, mergeSessions, parse, planQueue } from './herald'
 import { merge3, nearestIndex, toLines } from './tui'
 
 let failures = 0
@@ -12,19 +12,16 @@ const check = (name: string, cond: boolean, detail?: string) => {
 // current contents). The whole file is sessions now. Tabs are significant.
 const example = [
 	'superapp',
-	'\tbrief description of currently executing task',
-	'\t\tprompt: prompt that will automatically run after below is marked done',
-	'\t\tprompt: please add feature X, commit the changes, push PR',
-	'\t\t\t[EXECUTING]',
-	'\t\tprompt: please start working on X',
-	'\t\t\t[DONE]',
+	'\tprompt: prompt that will automatically run after below is marked done',
+	'\tprompt: please add feature X, commit the changes, push PR',
+	'\t\t[EXECUTING]',
+	'\tprompt: please start working on X',
+	'\t\t[DONE]',
 	'superapp-2',
-	'\tbrief description of currently executing task',
-	'\t\tprompt: investigate the flaky test',
-	'\t\t\t[NEEDS ATTENTION]',
+	'\tprompt: investigate the flaky test',
+	'\t\t[NEEDS ATTENTION]',
 	'superapp-3',
-	'\thttps://github.com/link-to-pr',
-	'\t\tprompt: /handle-pr-comments',
+	'\tprompt: /handle-pr-comments',
 	'superapp-4',
 	'superapp-reviews',
 	'core-iac',
@@ -80,9 +77,9 @@ s0.prompts[0].desiredKind = 'EXECUTING' // none -> insert
 const mutated = applyOps(m.lines, buildOps(m.sessions)).join('\n')
 check(
 	'top prompt gained [EXECUTING] and mid became [DONE]',
-	mutated.includes('prompt that will automatically run after below is marked done\n\t\t\t[EXECUTING]') &&
+	mutated.includes('prompt that will automatically run after below is marked done\n\t\t[EXECUTING]') &&
 		(mutated.match(/\[DONE\]/g) ?? []).length === 2 &&
-		!mutated.includes('[EXECUTING]\n\t\tprompt: please start'),
+		!mutated.includes('[EXECUTING]\n\tprompt: please start'),
 )
 
 // 4. Attention is a per-prompt marker: promoting it to [DONE] rewrites the
@@ -92,7 +89,7 @@ m2.sessions[1].prompts[0].desiredKind = 'DONE'
 const settled = applyOps(m2.lines, buildOps(m2.sessions)).join('\n')
 check(
 	'attention -> done rewrites the prompt marker in place',
-	settled.includes('prompt: investigate the flaky test\n\t\t\t[DONE]') && !settled.includes('[NEEDS ATTENTION]'),
+	settled.includes('prompt: investigate the flaky test\n\t\t[DONE]') && !settled.includes('[NEEDS ATTENTION]'),
 )
 
 // 4b. Clearing the marker (desiredKind -> null) removes just that line.
@@ -358,6 +355,109 @@ const resume = (() => {
 	return { done, reExecuting, content }
 })()
 check('a self-resumed [DONE] pane re-shows [EXECUTING], then settles back to [DONE]', resume.done && resume.reExecuting && resume.content.includes('[DONE]'), JSON.stringify(resume))
+
+// Multiline prompt: lines indented deeper than a `:` line fold into that prompt's text and
+// dispatch as one `\n`-joined block; there's still only one queue item, and its completion
+// marker lands BELOW the body (not wedged between the prompt line and its body).
+const multiline = (() => {
+	let content = 'Claudia\n\t: how do I fix this?\n\t\tWARNING: bad\n\t\tHost key verification failed.\n'
+	const rt = { starting: false, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: 1 }
+	const p0 = parse(content).sessions[0].prompts
+	const { lines, sessions } = parse(content)
+	const d = planQueue(sessions[0], rt, { now: 100, state: null, cmdDoneMtime: null }) // dispatch
+	content = applyOps(lines, buildOps(sessions)).join('\n')
+	return { count: p0.length, text: p0[0].text, dispatched: d.find((x) => x.type === 'prompt')?.text, content }
+})()
+check(
+	'a deeper-indented body folds into one multiline prompt with the marker below it',
+	multiline.count === 1 &&
+		multiline.text === 'how do I fix this?\nWARNING: bad\nHost key verification failed.' &&
+		multiline.dispatched === multiline.text &&
+		multiline.content.includes('Host key verification failed.\n\t\t[EXECUTING]'),
+	JSON.stringify(multiline),
+)
+
+// macroSteps: a macro body expands to runnable steps in RUN order (bottom-to-top, like every
+// herald queue) — args fill `{0}`/`{1}`/`{*}` (0-based, quote-aware, missing=blank), `#`
+// comment and blank lines drop, and `$` lines are commands. Braces (not `$1`) so `{n}` never
+// disturbs a `$2` lane sigil in the body.
+const steps = macroSteps(': review PR {0}, focus on {1}\n# skip me\n\n$ gh pr view {0}\n$2 npm run dev\n', ['2500', 'the auth refactor'])
+check(
+	'macroSteps runs bottom-to-top, fills args, drops comments/blanks, leaves $2 alone',
+	JSON.stringify(steps) ===
+		JSON.stringify([
+			{ text: 'npm run dev', isCmd: true },
+			{ text: 'gh pr view 2500', isCmd: true },
+			{ text: 'review PR 2500, focus on the auth refactor', isCmd: false },
+		]),
+	JSON.stringify(steps),
+)
+
+// A `@macro` call is ONE queue item: the file keeps the `@name` line and carries a single
+// overall marker, while its steps run bottom-to-top in sequence (the body's LAST line first —
+// here: `: watch` → `$ checkout` → `: prep`), each waiting on its own completion signal. Only
+// the last step's Stop advances the item to [DONE].
+const macroRun = (() => {
+	const macros = { ship: ': prep\n$ checkout\n: watch\n' }
+	let content = 'app\n\t@ship\n'
+	const rt = { starting: false, startedAt: 0, sentAt: 0, cmdSentAt: 0, prevPromptCount: 1, macroStep: 0 }
+	const sent: string[] = []
+	const marks: string[] = []
+	const step = (io: Parameters<typeof planQueue>[2]) => {
+		const { lines, sessions } = parse(content, {}, macros)
+		const d = planQueue(sessions[0], rt, io)
+		content = applyOps(lines, buildOps(sessions)).join('\n')
+		for (const x of d) if (x.type === 'prompt' || x.type === 'cmd') sent.push(`${x.type}:${x.text}`)
+		marks.push((content.match(/\[[^\]]+\]/g) ?? []).join(','))
+	}
+	step({ now: 100, state: null, cmdDoneMtime: null }) // dispatch step 0 (: watch — body's last line)
+	step({ now: 200, state: { event: 'Stop', mtimeMs: 200 }, cmdDoneMtime: null, paneBusy: false }) // → step 1 ($ checkout)
+	step({ now: 300, state: null, cmdDoneMtime: 250 }) // command done → step 2 (: prep)
+	step({ now: 400, state: { event: 'Stop', mtimeMs: 400 }, cmdDoneMtime: null, paneBusy: false }) // last step done → [DONE]
+	return { sent, marks, content, oneItem: parse(content, {}, macros).sessions[0].prompts.length === 1 }
+})()
+check(
+	'a @macro is one item: steps run bottom-to-top, the file keeps @ship with one overall marker',
+	JSON.stringify(macroRun.sent) === JSON.stringify(['prompt:watch', 'cmd:checkout', 'prompt:prep']) &&
+		JSON.stringify(macroRun.marks) === JSON.stringify(['[EXECUTING]', '[EXECUTING]', '[EXECUTING]', '[DONE]']) &&
+		macroRun.content.includes('\t@ship\n') &&
+		macroRun.oneItem,
+	JSON.stringify(macroRun),
+)
+
+// Worktrees: an indented non-sigil line names a git worktree of its enclosing repo — a child
+// session at `<repo>/../<repo>-worktrees/<name>` whose deeper-indented children are its queue items.
+// A childless non-sigil line is an inert session (never created).
+const wt = (() => {
+	const { sessions } = parse('superapp\n\t: base task\n\tfeat-x\n\t\t: work in x\n\t\t$ npm test\n\tjust a note\n')
+	return {
+		base: sessions.find((s) => s.label === 'superapp'),
+		x: sessions.find((s) => s.label === 'feat-x'),
+		note: sessions.find((s) => s.label === 'just a note'),
+	}
+})()
+check(
+	'a non-sigil indented line becomes a worktree session; its children run there',
+	wt.base?.prompts.length === 1 &&
+		wt.base.prompts[0].text === 'base task' &&
+		wt.x?.worktreeBase === wt.base.dir &&
+		wt.x.dir.endsWith('/superapp-worktrees/feat-x') &&
+		wt.x.prompts.length === 2 &&
+		wt.x.prompts[0].text === 'work in x' &&
+		wt.x.prompts[1].isCmd === true &&
+		wt.note?.prompts.length === 0,
+	JSON.stringify({ base: wt.base?.prompts.map((p) => p.text), x: wt.x?.prompts.map((p) => p.text), xdir: wt.x?.dir, xbase: wt.x?.worktreeBase, note: wt.note?.prompts.length }),
+)
+
+// A worktree task carries its own marker one indent deeper (like any prompt), and it
+// attaches back to the worktree's task — not the parent repo — so it round-trips byte-exact.
+const wtMark = (() => {
+	const content = 'repo\n\tfeat\n\t\t: do it\n\t\t\t[EXECUTING]\n'
+	const { lines, sessions } = parse(content)
+	const feat = sessions.find((s) => s.label === 'feat')
+	return { kind: feat?.prompts[0]?.marker?.kind, roundTrip: applyOps(lines, buildOps(sessions)).join('\n') === content }
+})()
+check('a worktree task keeps its own marker (deeper indent) and round-trips', wtMark.kind === 'EXECUTING' && wtMark.roundTrip, JSON.stringify(wtMark))
 
 // An explicit `: /clear` prompt clears the conversation without invoking the model,
 // so no Stop event ever arrives. It must still complete (a tick after dispatch) so the

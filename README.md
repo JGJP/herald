@@ -111,16 +111,14 @@ supervisor's rewrites never touch them.
 
 ```
 moonbase
-	brief description (freeform, ignored)
-		prompt: newest task, runs last
-		prompt: please add feature X, commit, push PR
-			[EXECUTING]
-		prompt: please start working on X
-			[DONE]
+	prompt: newest task, runs last
+	prompt: please add feature X, commit, push PR
+		[EXECUTING]
+	prompt: please start working on X
+		[DONE]
 moonbase-2
-	brief description (freeform, ignored)
-		prompt: investigate the flaky test
-			[NEEDS ATTENTION]
+	prompt: investigate the flaky test
+		[NEEDS ATTENTION]
 ```
 
 - A line at column 0 is a **session**. It is, in order of precedence:
@@ -146,6 +144,18 @@ moonbase-2
   event). `[NEEDS ATTENTION]` replaces the marker when Claude blocks waiting for
   input mid-task; answering it (submitting a prompt into the pane) flips it back to
   `[EXECUTING]`.
+- **Multiline prompt.** Lines indented **deeper** than a `prompt:`/`:` line are that
+  prompt's **body** — paste an error, a log, a spec under it and the whole block is sent
+  as one multiline prompt (via bracketed paste, so the newlines don't submit early). The
+  item stays a single queue entry and its status marker lands **below** the body:
+
+  ```
+  Claudia
+  	: how do I resolve this? the IP changed
+  		@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@
+  		Host key verification failed.
+  			[EXECUTING]
+  ```
 - `$command` lines run **once** in the session's **shell window** (the 2nd window,
   not the claude pane). A command is marked `[EXECUTING]` when dispatched and only
   advances to `[DONE]` once it has actually **exited** (a per-shell hook writes its
@@ -162,6 +172,23 @@ moonbase-2
   block `$` work in lane 1. Extra windows (`claude2`, `shell2`, …) are created on demand.
   Each lane reports completion via its own done-files (`state/<label>.2.cmd`, etc.). Note:
   every `:N` lane is a *separate* Claude conversation running concurrently under your account.
+- **Worktrees.** An indented line that *isn't* a sigil (`:`/`$`/`@`/`#`/`show`) names a
+  **git worktree** of its session's repo. Items indented **below** it run in that worktree
+  — it's its own session (own tmux windows, own Claude), created on demand the first time it
+  has work: `git worktree add --detach` at `<repo>/../<repo>-worktrees/<name>` (a detached HEAD off
+  the repo's current commit). Removing the line kills its tmux session but leaves the
+  worktree on disk — clean up with `git worktree remove` yourself. A worktree line with no
+  children is inert.
+
+  ```
+  superapp
+  	: task on the main checkout
+  	feature-x                       ← worktree at ../superapp-worktrees/feature-x
+  		: try the risky refactor here
+  		$ pnpm test
+  	feature-y                       ← a second, independent worktree + Claude
+  		: try a different approach
+  ```
 - `#…` lines are **comments**, and an **indented** one is also a **barrier**: the drain
   halts when it reaches it (in its lane) until you delete the line — put one below the
   work you want to stop (the bottom-most item runs first, so a `#` at the very bottom
@@ -388,7 +415,11 @@ that matches `herald-aliases.yaml` uses the mapped path. See the aliases section
 
 - **Sublime Text** — `herald.sublime-syntax` (drop into `Packages/User`). Drop
   `herald.tmPreferences` in alongside it so `toggle_comment` (`Cmd`/`Ctrl`+`/`)
-  comments rows out with `#`.
+  comments rows out with `#`. For the black-on-yellow **macro** styling, copy
+  `herald.sublime-color-scheme`, rename it to match your active color scheme (e.g.
+  `Mariana.sublime-color-scheme`), and place it where Sublime will merge it — in
+  `Packages/User` if your scheme is built-in, or in its own package folder (e.g.
+  `Packages/herald/`) if your scheme itself lives in `Packages/User`.
 - **Neovim / Vim** — `editors/nvim/` (`syntax` + `ftdetect` + `ftplugin`). Symlink or
   copy the three `herald.vim` files into the matching dirs under `~/.config/nvim/`;
   filetype detection and highlighting then load automatically. Status markers render
@@ -424,11 +455,57 @@ infra: ~/work/infra-monorepo
 The file is re-read every tick, so alias edits take effect without a restart. A
 header that isn't a listed alias falls back to the path / bare-name rules above.
 
+## Macros (`herald-macros.yaml`)
+
+Optional. A YAML map of `name: |<multiline block>`, so a `@name` line on its own in a
+`.herald` file runs a reusable block of rows. See `herald-macros.example.yaml`.
+
+```yaml
+ship: |
+  $ gh pr view --web
+  : commit, push, and open the PR, no claude attribution
+  : run the tests and fix anything broken
+```
+
+Drop `@ship` under a session and it becomes **one queue item** whose block expands **in
+memory** — the `@ship` line stays in the file, and its rows (`:` prompts, `$` commands;
+`#` lines are comments, dropped) run **in sequence** as the item's steps:
+
+```
+core-iac
+	@ship
+		[EXECUTING]     ← one overall marker: [EXECUTING] while any step runs, [DONE] when all finish
+```
+
+Steps run **bottom-to-top**, like every herald queue — the block's **last** line runs
+first (put the setup command at the bottom, the follow-up prompt above it). Only a single
+marker is written — the macro is tracked as a whole, not row by row (the step cursor lives
+in the controller runtime, so it resumes mid-macro across ticks and restarts). A body line
+like `@@@…` never matches (a name char must follow the `@`).
+
+**Arguments.** Pass them after the name; the block fills placeholders from them:
+
+```yaml
+review: |
+  : review PR {0} — focus on {1}, no claude attribution
+  $ gh pr view {0} --web
+```
+
+```
+core-iac
+	@review 2500 "the auth refactor"
+```
+
+`{0}`, `{1}`, … are the positional args (**0-based**; **quote** a value to keep its
+spaces), `{*}` is all of them space-joined, and a missing one expands blank. Braces are
+used (not `$1`) so a placeholder never clashes with a `$2`/`:2` lane sigil inside the block.
+
 ## Env overrides (mainly for testing)
 
 - `HERALD_DIR` — scan a different directory for `*.herald` files instead of the repo dir.
 - `HERALD_FILE` — single-file mode: watch exactly this one file (ignores the `*.herald` scan).
 - `HERALD_ALIASES` — read aliases from a different file instead of `./herald-aliases.yaml`.
+- `HERALD_MACROS` — read macros from a different file instead of `./herald-macros.yaml`.
 - `HERALD_READY_MS` — boot grace before the first prompt is sent (default 6000).
 
 ## Test

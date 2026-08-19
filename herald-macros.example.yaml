@@ -1,0 +1,26 @@
+# Copy to herald-macros.yaml (gitignored). Each key is a macro name; a `@<name>` line on
+# its own in a .herald file becomes one queue item whose block runs in sequence. The block's
+# lines are ordinary .herald rows — `:` prompts and `$` commands (`#` lines are comments,
+# dropped). The `@<name>` line stays in the file and carries a single overall marker
+# ([EXECUTING] while any step runs, [DONE] when all finish); the block is expanded in memory.
+#
+# ORDER: steps run bottom-to-top, like every herald queue — the block's LAST line runs first.
+# So put the setup command at the bottom and the follow-up prompt above it.
+#
+# Arguments: pass them after the name — `@review 2500 "the auth refactor"`. In the block,
+# {0} {1} … are the positional args (0-based; quote a value to keep its spaces), {*} is all
+# of them, and a missing one is blank. Braces are used (not $1) so they never clash with a
+# `$2`/`:2` lane sigil in the block.
+ship: |
+  $ gh pr view --web
+  : commit, push, and open the PR, no claude attribution
+  : {*}
+
+review: |
+  : review PR {0} — focus on {1}. leave inline comments, no claude attribution
+  $ gh pr view {0} --web
+
+release: |
+  # verify the deploy, then delete this line to continue
+  : publish the release
+  : cut the release branch
