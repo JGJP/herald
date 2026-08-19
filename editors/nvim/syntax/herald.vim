@@ -10,6 +10,10 @@ endif
 " Comment: any row starting with `#` (at any indent, incl. column 0) is ignored.
 syntax match heraldComment /^\s*#.*$/
 
+" Macro call: a `@name [args]` line the controller expands to a reusable block. A name char
+" must follow the `@`, so a `@@@…` body line never matches.
+syntax match heraldMacro /^\s*@[0-9A-Za-z_-]\+\%(\s.*\)\?$/
+
 " Session header: a column-0 (non-tab, non-`#`) line. A trailing `!` = "show it now".
 syntax match heraldHeader /^[^\t#].*$/ contains=heraldBang
 
@@ -40,5 +44,7 @@ highlight default link heraldShow         Keyword
 highlight default link heraldBang         Special
 " White on red, matching the Sublime setup; `default` so a colorscheme can override.
 highlight default heraldStatus guifg=#ffffff guibg=#dc0404 ctermfg=15 ctermbg=196
+" Macro calls: black on LINE green (#06C755); `default` so a colorscheme can override.
+highlight default heraldMacro guifg=#000000 guibg=#06c755 ctermfg=black ctermbg=41
 
 let b:current_syntax = 'herald'

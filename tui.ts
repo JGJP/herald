@@ -81,6 +81,7 @@ const C = {
 	cmdSigil: '\x1b[38;5;114m',
 	cmdText: '\x1b[38;5;180m',
 	show: '\x1b[38;5;170m',
+	macro: '\x1b[38;5;16;48;2;6;199;85m', // black on LINE green (#06C755)
 	exec: '\x1b[38;5;220m',
 	done: '\x1b[38;5;114m',
 	attn: '\x1b[1;38;5;203m',
@@ -115,7 +116,10 @@ function colorsFor(line: string): (string | null)[] {
 	const body = line.slice(lead)
 	const low = body.toLowerCase()
 	let m: RegExpMatchArray | null
-	if ((m = low.match(/^(prompt)?:+\d*/))) {
+	if (/^@[\w-]+(?:\s.*)?$/.test(body)) {
+		// Macro call — a name char must follow the `@` (so a `@@@…` body line stays default).
+		fill(lead, n, C.macro)
+	} else if ((m = low.match(/^(prompt)?:+\d*/))) {
 		fill(lead, lead + m[0].length, C.promptSigil)
 		fill(lead + m[0].length, n, C.promptText)
 	} else if ((m = body.match(/^\$+\d*/))) {
@@ -129,7 +133,7 @@ function colorsFor(line: string): (string | null)[] {
 		fill(lead, lead + m[1].length, c)
 		if (m[2]) fill(lead + m[1].length, lead + m[1].length + 1, C.bang)
 	}
-	// else: freeform description — stays default.
+	// else: a worktree name (indented non-sigil) — stays default.
 	return col
 }
 

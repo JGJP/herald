@@ -12,6 +12,13 @@
 			}
 		},
 		{
+			"comment": "Macro call: a `@name [args]` line the controller expands to a reusable block. A name char must follow the `@`, so a `@@@…` body line never matches.",
+			"match": "^[ \\t]*(@[\\w-]+(?:[ \\t].*)?)$",
+			"captures": {
+				"1": { "name": "entity.name.function.macro.herald" }
+			}
+		},
+		{
 			"comment": "Prompt: `prompt:` or the `:` shorthand; `::`/`:2` select the lane/pane.",
 			"match": "^\\t+ *((?i:prompt)?:+\\d*)(.*)$",
 			"captures": {
