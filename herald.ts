@@ -239,8 +239,14 @@ export function parse(content: string, aliases: Aliases = {}, macros: Macros = {
 		if (tabs.length === 0) {
 			lastPrompt = null
 			// A column-0 `#` is a plain comment (it sits between sessions, so there is no
-			// queue to halt): ignored and preserved verbatim, like a blank line.
-			if (line.trim().startsWith('#')) continue
+			// queue to halt): ignored and preserved verbatim, like a blank line. It also
+			// closes the current session block, so an indented line beneath it (e.g. a
+			// deeper `#` note) isn't captured as that session's barrier/worktree/prompt.
+			if (line.trim().startsWith('#')) {
+				cur = null
+				containers = []
+				continue
+			}
 			const raw = line.trim()
 			// A trailing `!` on the header means "show this session immediately".
 			const showNow = raw.endsWith('!')

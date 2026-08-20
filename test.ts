@@ -517,6 +517,13 @@ const col0 = parse('# top-level note\nalpha\n\t: work\n# another\n')
 check('a column-0 `#` is a comment, not a session header', col0.sessions.length === 1 && col0.sessions[0].label === 'alpha' && col0.sessions[0].prompts.length === 1)
 check('column-0 comments round-trip verbatim', applyOps(col0.lines, buildOps(col0.sessions)).join('\n') === '# top-level note\nalpha\n\t: work\n# another\n')
 
+// A column-0 `#` closes the current session block, so an indented `#` note beneath it is
+// NOT captured as the preceding session's barrier — the session stays spawnable.
+const commentThenIndented = parse('alpha\n\t: work\n# a note\n\t# sub-note\n')
+check('an indented `#` under a column-0 comment is not a barrier on the prior session', commentThenIndented.sessions.length === 1 && commentThenIndented.sessions[0].prompts.length === 1 && !commentThenIndented.sessions[0].prompts.some((p) => p.isBarrier))
+check('a session is still pending despite a trailing commented note block', hasPendingInput(commentThenIndented.sessions[0]))
+check('a comment-then-indented block round-trips verbatim', applyOps(commentThenIndented.lines, buildOps(commentThenIndented.sessions)).join('\n') === 'alpha\n\t: work\n# a note\n\t# sub-note\n')
+
 // The spawn gate: a task below a barrier still spawns; a barrier-blocked session does not.
 check('a task below a barrier is pending input (spawn)', hasPendingInput(parse('alpha\n\t# manual\n\t: run me\n').sessions[0]))
 check('a barrier-blocked session has nothing to input (no spawn)', !hasPendingInput(parse('alpha\n\t: a\n\t# blocked\n').sessions[0]))
