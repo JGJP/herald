@@ -71,9 +71,17 @@ contexts:
         1: invalid.illegal.marker.herald
         2: keyword.operator.show-now.herald
 
+    # Worktree label: a tab-indented, non-sigil line (a git worktree of the enclosing
+    # repo). It matches none of the rules above, mirroring parse()'s fallback branch, and
+    # reads as a class name — the same scope as the repo header it stands in for. A
+    # trailing `!` ("show now") gets the same accent as on a repo header.
+    - match: '^\t+[ ]*(\S[^\n]*?)[ ]*(!?)[ ]*$'
+      captures:
+        1: entity.name.class.herald
+        2: keyword.control.show-now.herald
+
     # Session header: a column-0 line (no leading tab). A trailing `!` means
-    # "switch to this session now". A tab-indented non-sigil line (a git worktree name)
-    # matches none of the above and stays plain.
+    # "switch to this session now".
     - match: '^(?![\t\n])([^\n]*?)[ ]*(!?)[ ]*$'
       captures:
         1: entity.name.class.herald

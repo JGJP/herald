@@ -5,6 +5,7 @@ import {
 	readdirSync,
 	readFileSync,
 	renameSync,
+	rmdirSync,
 	statSync,
 	unlinkSync,
 	writeFileSync,
@@ -193,6 +194,10 @@ interface Session {
 	// The header text with any trailing `!` stripped (what to rewrite the line to
 	// once a "show now" request is consumed).
 	header: string
+	// The header line's leading whitespace: '' for a column-0 repo header, the tab run
+	// for an indented worktree label. buildOps prepends it when rewriting the line so a
+	// consumed worktree `!` keeps its indentation.
+	indent?: string
 	// A `!` suffix on the header ("show now"): switch the tmux client to this session
 	// immediately, regardless of the queue. `showNowFired` is set the tick we act on
 	// it, so buildOps strips the `!` — a one-shot request.
@@ -261,6 +266,7 @@ export function parse(content: string, aliases: Aliases = {}, macros: Macros = {
 				sessionMarker: null,
 				desiredSession: null,
 				header,
+				indent: '',
 				showNow,
 				showNowFired: false,
 			}
@@ -395,18 +401,28 @@ export function parse(content: string, aliases: Aliases = {}, macros: Macros = {
 		} else {
 			// A non-sigil indented line names a git worktree of its container's repo. It's a
 			// child session whose dir (<repo>/../<repo>-worktrees/<name>) is created on demand — only
-			// once it has queued work below it; an empty one is just an inert note.
+			// once it has queued work below it; an empty one is just an inert note. A trailing
+			// `!` means "show this worktree now", like on a repo header; it's stripped from the
+			// name (so the tmux label and dir stay clean) and consumed once acted on.
+			const showNow = t.endsWith('!')
+			const name = showNow ? t.slice(0, -1).trimEnd() : t
+			// The tmux label prefixes the container's label onto the worktree name (`app-4-feat`),
+			// so the worktree's session sorts next to its repo's `__app-4` in `tmux ls` and two
+			// same-named worktrees under different repos never collide. `-` keeps it safe as both
+			// a tmux session name (no `.`/`:`) and a state filename (no `/`). The on-disk name and
+			// dir leaf stay bare (`feat`) — only the runtime identity carries the prefix.
 			const wt: Session = {
-				label: t,
-				dir: join(dirname(target.dir), `${basename(target.dir)}-worktrees`, t),
+				label: `${target.label}-${name}`,
+				dir: join(dirname(target.dir), `${basename(target.dir)}-worktrees`, name),
 				worktreeBase: target.dir,
 				headerIdx: i,
 				lastChildIdx: i,
 				prompts: [],
 				sessionMarker: null,
 				desiredSession: null,
-				header: t,
-				showNow: false,
+				header: name,
+				indent: line.slice(0, line.length - line.trimStart().length),
+				showNow,
 				showNowFired: false,
 			}
 			sessions.push(wt)
@@ -445,8 +461,9 @@ export function buildOps(sessions: Session[]): Op[] {
 				ops.push({ pos: p.bodyEndIdx, type: 'insert', text: `${p.indent}\t${MARKER[p.desiredKind]}` })
 			}
 		}
-		// A fired "show now" (`!` header) is consumed by stripping the `!`.
-		if (s.showNow && s.showNowFired) ops.push({ pos: s.headerIdx, type: 'replace', text: s.header })
+		// A fired "show now" (`!` on a repo header or worktree label) is consumed by
+		// stripping the `!`; the leading indent (empty for a repo header) is preserved.
+		if (s.showNow && s.showNowFired) ops.push({ pos: s.headerIdx, type: 'replace', text: `${s.indent ?? ''}${s.header}` })
 		const cur = s.sessionMarker?.text ?? null
 		if (cur === s.desiredSession) continue
 		if (s.sessionMarker) {
@@ -528,6 +545,12 @@ interface RtEntry {
 	starting: boolean
 	startedAt: number
 	lanes: Record<number, LaneRt>
+	// Set only for a worktree session: the worktree's dir and its base repo, stamped every
+	// tick it's alive. Kept so that when its line is later deleted — and the session is gone
+	// from the model — the kill loop still knows what to `git worktree remove`, cleaning the
+	// worktree up alongside its tmux session.
+	worktreeDir?: string
+	worktreeBase?: string
 }
 type Rt = Record<string, RtEntry>
 
@@ -799,6 +822,31 @@ async function addWorktreeAndSpawn(label: string, base: string, dir: string) {
 	await doSpawn(label, dir)
 }
 
+// Delete the git worktree behind a torn-down session (its line was deleted from the control
+// file), so worktrees are cleaned up alongside their tmux session rather than piling up on
+// disk. Like the tmux kill it's unconditional: `--force` deletes even a dirty worktree
+// (uncommitted or untracked changes are discarded), matching "removing the line tears it all
+// down". Commit or move anything you want to keep before deleting the line.
+async function removeWorktree(label: string, base: string, dir: string) {
+	if (!existsSync(dir)) return
+	log(`worktree remove ${dir} (from ${base})`)
+	if (DRY) return
+	const r = await $({ nothrow: true, quiet: true })`git -C ${base} worktree remove --force ${dir}`
+	if (r.exitCode !== 0) {
+		log(`WARN worktree remove failed for ${T(label)} (left on disk): ${r.stderr.trim()}`)
+		return
+	}
+	// If that was the repo's last worktree, remove the now-empty `<repo>-worktrees` folder so
+	// it doesn't linger. Best-effort: skip (don't throw) if it's gone or not actually empty.
+	const parent = dirname(dir)
+	try {
+		if (existsSync(parent) && readdirSync(parent).length === 0) {
+			rmdirSync(parent)
+			log(`removed empty worktrees dir ${parent}`)
+		}
+	} catch {}
+}
+
 // Recreate lane `n`'s shell window so command completion is reported again. Two cases:
 // a partial/absent pane, or a tmux-resurrect restore that brought the shell back stripped
 // of its HERALD_SHELL/HERALD_PANE env and @herald tag (see taggedPane). In the restore
@@ -951,6 +999,24 @@ export const hasPendingInput = (s: Session): boolean => {
 	if (s.prompts.some((p) => p.desiredKind === 'EXECUTING' || p.desiredKind === 'ATTENTION')) return true
 	const next = nearestAbove(s, frontierIdx(s))
 	return next !== null && !next.isBarrier
+}
+
+// The live sessions to tear down this tick: every `__` tmux session no longer backed by a
+// model label (and not reserved). Each carries the worktree to reap alongside it — read
+// from rt, the only surviving record of a removed worktree's dir/base — or null for a plain
+// repo session. Pure so the reconcile decision can be unit-tested apart from the tmux/git I/O.
+export interface ReapTarget {
+	label: string
+	worktree: { base: string; dir: string } | null
+}
+export function reapTargets(live: Iterable<string>, modelLabels: Set<string>, reserved: Set<string>, rt: Record<string, { worktreeDir?: string; worktreeBase?: string }>): ReapTarget[] {
+	const out: ReapTarget[] = []
+	for (const label of live) {
+		if (modelLabels.has(label) || reserved.has(label)) continue
+		const e = rt[label]
+		out.push({ label, worktree: e?.worktreeDir && e?.worktreeBase ? { base: e.worktreeBase, dir: e.worktreeDir } : null })
+	}
+	return out
 }
 
 // The window used by the last real task before a `show` (the nearest prompt/command
@@ -1177,7 +1243,7 @@ async function tick(rt: Rt) {
 					log(`worktree ${T(label)}: base ${s.worktreeBase} is not a git repo, skipping`)
 					continue
 				}
-				rt[label] = { starting: true, startedAt: Date.now(), lanes: {} }
+				rt[label] = { starting: true, startedAt: Date.now(), lanes: {}, worktreeDir: dir, worktreeBase: s.worktreeBase }
 				const base = s.worktreeBase
 				actions.push(() => addWorktreeAndSpawn(label, base, dir))
 				continue
@@ -1216,6 +1282,12 @@ async function tick(rt: Rt) {
 		rt[label] ??= { starting: true, startedAt: 0, lanes: {} }
 		const re = rt[label]
 		re.lanes ??= {} // migrate a flat entry persisted before per-lane rt existed
+		// Keep a live worktree's dir/base current so the kill loop can clean it up once its
+		// line is deleted (by then it's gone from the model, so rt is the only record).
+		if (s.worktreeBase) {
+			re.worktreeDir = dir
+			re.worktreeBase = s.worktreeBase
+		}
 		if (re.starting && Date.now() - re.startedAt < READY_MS) continue // let claude boot
 		re.starting = false
 		if (s.desiredSession && /NO DIR/i.test(s.desiredSession)) s.desiredSession = null
@@ -1271,9 +1343,11 @@ async function tick(rt: Rt) {
 	// A session that stays in the control file (and is live) is a safe place to
 	// park a client before we kill the session it's watching.
 	const survivor = [...live].find((label) => modelLabels.has(label) || RESERVED.has(label)) ?? null
-	for (const label of live) {
-		if (modelLabels.has(label) || RESERVED.has(label)) continue
+	for (const { label, worktree } of reapTargets(live, modelLabels, RESERVED, rt)) {
 		actions.push(() => doKill(label, survivor))
+		// If this was a worktree, remove it from disk too (after the kill frees its cwd), so
+		// worktrees are torn down alongside their session.
+		if (worktree) actions.push(() => removeWorktree(label, worktree.base, worktree.dir))
 		rmAllDoneFiles(label)
 		delete rt[label]
 	}

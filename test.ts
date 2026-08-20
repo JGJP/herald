@@ -1,5 +1,5 @@
 #!/usr/bin/env tsx
-import { applyOps, buildOps, frontierWindow, hasPendingInput, macroSteps, mergeSessions, parse, planQueue } from './herald'
+import { applyOps, buildOps, frontierWindow, hasPendingInput, macroSteps, mergeSessions, parse, planQueue, reapTargets } from './herald'
 import { merge3, nearestIndex, toLines } from './tui'
 
 let failures = 0
@@ -432,8 +432,8 @@ const wt = (() => {
 	const { sessions } = parse('superapp\n\t: base task\n\tfeat-x\n\t\t: work in x\n\t\t$ npm test\n\tjust a note\n')
 	return {
 		base: sessions.find((s) => s.label === 'superapp'),
-		x: sessions.find((s) => s.label === 'feat-x'),
-		note: sessions.find((s) => s.label === 'just a note'),
+		x: sessions.find((s) => s.label === 'superapp-feat-x'),
+		note: sessions.find((s) => s.label === 'superapp-just a note'),
 	}
 })()
 check(
@@ -454,10 +454,42 @@ check(
 const wtMark = (() => {
 	const content = 'repo\n\tfeat\n\t\t: do it\n\t\t\t[EXECUTING]\n'
 	const { lines, sessions } = parse(content)
-	const feat = sessions.find((s) => s.label === 'feat')
+	const feat = sessions.find((s) => s.label === 'repo-feat')
 	return { kind: feat?.prompts[0]?.marker?.kind, roundTrip: applyOps(lines, buildOps(sessions)).join('\n') === content }
 })()
 check('a worktree task keeps its own marker (deeper indent) and round-trips', wtMark.kind === 'EXECUTING' && wtMark.roundTrip, JSON.stringify(wtMark))
+
+// A worktree's tmux label prefixes its container's label (`app-4-feat`), so it groups with
+// the repo's `__app-4` and same-named worktrees under different repos don't collide. The
+// prefix chains through nesting, while the dir leaf stays the bare on-disk name.
+const wtPrefix = parse('app-4\n\tfeat\n\t\tsub\n\t\t\t: deep\n').sessions.filter((s) => s.worktreeBase)
+check('a worktree label is prefixed with its repo, chaining through nesting', wtPrefix[0].label === 'app-4-feat' && wtPrefix[1].label === 'app-4-feat-sub' && wtPrefix[0].dir.endsWith('/app-4-worktrees/feat') && wtPrefix[1].dir.endsWith('/feat-worktrees/sub'), JSON.stringify(wtPrefix.map((s) => [s.label, s.dir])))
+
+// Teardown: a live `__` session no longer in the model is reaped. A worktree session (its
+// dir/base stamped in rt while alive) is reaped WITH its worktree so it's cleaned up from
+// disk alongside its tmux session; a plain repo session carries no worktree to remove.
+const reapRt = { 'app-4-feat': { worktreeDir: '/r/app-4-worktrees/feat', worktreeBase: '/r/app-4' }, app: {} }
+const reaped = reapTargets(['app', 'app-4-feat', 'keep'], new Set(['keep']), new Set<string>(), reapRt)
+check('a removed worktree session is reaped with its worktree (dir/base from rt)', JSON.stringify(reaped.find((r) => r.label === 'app-4-feat')?.worktree) === JSON.stringify({ base: '/r/app-4', dir: '/r/app-4-worktrees/feat' }))
+check('a removed plain session is reaped with no worktree to remove', reaped.find((r) => r.label === 'app')?.worktree === null)
+check('a session still in the model (or reserved) is not reaped', !reaped.some((r) => r.label === 'keep') && reaped.length === 2)
+// A worktree whose rt entry is missing (e.g. never stamped) is still killed, just not
+// removed from disk — never throws on the absent entry.
+check('a reaped label with no rt entry yields a null worktree', reapTargets(['gone'], new Set<string>(), new Set<string>(), {}).every((r) => r.worktree === null))
+
+// A trailing `!` on a worktree label means "show it now", exactly like on a repo header:
+// it's stripped from the tmux label and the on-disk dir leaf so both stay clean.
+const wtBang = parse('repo\n\tfeat !\n\t\t: do it\n').sessions.find((s) => s.worktreeBase)!
+check('a worktree `!` sets showNow and cleans the label/dir', wtBang.showNow === true && wtBang.label === 'repo-feat' && wtBang.header === 'feat' && wtBang.dir.endsWith('/repo-worktrees/feat'))
+// Unfired, the `!` round-trips verbatim (indent preserved); once fired, buildOps strips
+// just the `!`, keeping the worktree's leading tab.
+const wtBangParse = parse('repo\n\tfeat !\n\t\t: do it\n')
+check('an unfired worktree `!` round-trips verbatim', applyOps(wtBangParse.lines, buildOps(wtBangParse.sessions)).join('\n') === 'repo\n\tfeat !\n\t\t: do it\n')
+wtBangParse.sessions.find((s) => s.worktreeBase)!.showNowFired = true
+check('a fired worktree `!` is stripped, keeping the indent', applyOps(wtBangParse.lines, buildOps(wtBangParse.sessions)).join('\n') === 'repo\n\tfeat\n\t\t: do it\n')
+// A worktree with a `!` but no queued work still counts as pending-to-show, so the spawn
+// gate (which ORs showNow with hasPendingInput) will create + reveal it.
+check('a bare worktree `!` carries showNow even with no work', parse('repo\n\tfeat !\n').sessions.find((s) => s.worktreeBase)!.showNow === true)
 
 // An explicit `: /clear` prompt clears the conversation without invoking the model,
 // so no Stop event ever arrives. It must still complete (a tick after dispatch) so the

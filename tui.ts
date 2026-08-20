@@ -132,8 +132,13 @@ function colorsFor(line: string): (string | null)[] {
 		const c = inner.includes('executing') ? C.exec : inner.includes('done') ? C.done : inner.includes('attention') ? C.attn : C.marker
 		fill(lead, lead + m[1].length, c)
 		if (m[2]) fill(lead + m[1].length, lead + m[1].length + 1, C.bang)
+	} else {
+		// A worktree name (indented non-sigil): a git worktree of the enclosing repo,
+		// styled like the repo header it stands in for, including its trailing `!` accent.
+		fill(0, n, C.header)
+		const b = line.match(/(!)[ ]*$/)
+		if (b) fill(b.index!, b.index! + 1, C.bang)
 	}
-	// else: a worktree name (indented non-sigil) — stays default.
 	return col
 }
 

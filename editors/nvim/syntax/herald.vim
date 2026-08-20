@@ -17,6 +17,12 @@ syntax match heraldMacro /^\s*@[0-9A-Za-z_-]\+\%(\s.*\)\?$/
 " Session header: a column-0 (non-tab, non-`#`) line. A trailing `!` = "show it now".
 syntax match heraldHeader /^[^\t#].*$/ contains=heraldBang
 
+" Worktree label: a tab-indented, non-sigil line (a git worktree of the enclosing repo).
+" Mirrors parse()'s fallback branch; the lookahead skips comment/macro/prompt/command/
+" show/marker rows so only true labels match. Styled like a header (Identifier), and a
+" trailing `!` ("show now") gets the same accent.
+syntax match heraldWorktree /\c^\t\+ *\%([#@:$[]\|!\s*$\|show\s*$\|prompt:\)\@!\S.*$/ contains=heraldBang
+
 " Prompt: `prompt:` or the `:` shorthand; `::`/`:2` select the lane. Only the sigil is
 " highlighted (\zs starts the match after the indent); the text stays normal.
 syntax match heraldPromptSigil /^\t\+ *\zs\c\%(prompt\)\?:\+\d*/
@@ -37,6 +43,7 @@ syntax match heraldBang /!/ contained
 
 highlight default link heraldComment      Comment
 highlight default link heraldHeader       Identifier
+highlight default link heraldWorktree     Identifier
 highlight default link heraldPromptSigil  Statement
 highlight default link heraldCommandSigil Operator
 highlight default link heraldCommandText  String

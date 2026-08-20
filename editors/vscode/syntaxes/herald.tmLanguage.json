@@ -74,6 +74,14 @@
 			}
 		},
 		{
+			"comment": "Worktree label: a tab-indented, non-sigil line (a git worktree of the enclosing repo). Mirrors parse()'s fallback branch; styled as a class name, the same scope as the repo header it stands in for. A trailing `!` means show it now.",
+			"match": "^\\t+ *(\\S[^\\n]*?)[ ]*(!?)[ ]*$",
+			"captures": {
+				"1": { "name": "entity.name.class.herald" },
+				"2": { "name": "keyword.control.show-now.herald" }
+			}
+		},
+		{
 			"comment": "Session header: a column-0 line. A trailing `!` means switch to it now.",
 			"match": "^(?![\\t\\n])([^\\n]*?)[ ]*(!?)[ ]*$",
 			"captures": {

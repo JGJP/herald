@@ -176,17 +176,22 @@ moonbase-2
   **git worktree** of its session's repo. Items indented **below** it run in that worktree
   — it's its own session (own tmux windows, own Claude), created on demand the first time it
   has work: `git worktree add --detach` at `<repo>/../<repo>-worktrees/<name>` (a detached HEAD off
-  the repo's current commit). Removing the line kills its tmux session but leaves the
-  worktree on disk — clean up with `git worktree remove` yourself. A worktree line with no
-  children is inert.
+  the repo's current commit). Its tmux session is `__<repo>-<name>` (the repo's label
+  prefixed onto the worktree name), so it sorts next to the repo's own `__<repo>` and two
+  same-named worktrees under different repos never clash. A trailing `!` on the line means
+  "switch to it now", just like on a repo header. Removing the line tears the worktree down
+  with its tmux session: the supervisor `git worktree remove --force`s it. Like the tmux kill
+  this is unconditional — uncommitted or untracked changes in the worktree are discarded — so
+  commit or move anything worth keeping first. Once a repo's last worktree goes, its now-empty
+  `<repo>-worktrees` folder is removed too. A worktree line with no children is inert.
 
   ```
   superapp
   	: task on the main checkout
-  	feature-x                       ← worktree at ../superapp-worktrees/feature-x
+  	feature-x                       ← worktree ../superapp-worktrees/feature-x, tmux __superapp-feature-x
   		: try the risky refactor here
   		$ pnpm test
-  	feature-y                       ← a second, independent worktree + Claude
+  	feature-y                       ← a second, independent worktree + Claude (__superapp-feature-y)
   		: try a different approach
   ```
 - `#…` lines are **comments**, and an **indented** one is also a **barrier**: the drain
@@ -222,7 +227,7 @@ moonbase-2
 | Add a `!` to a session header | Switches your attached tmux client to this session immediately (queue-independent), then strips the `!` |
 | Add a space-separated ` !` to any item line (or its marker) | Reveals that item's window immediately — the shell for a `$command`, the claude pane for a prompt — then strips the `!` |
 | Delete all prompts under a session | Sends `/clear` (session stays alive, idle) |
-| Delete the session name | Kills the tmux session |
+| Delete the session name | Kills the tmux session — and, for a worktree, `git worktree remove --force`s it too (uncommitted changes discarded) |
 | Answer a `[NEEDS ATTENTION]` prompt | Type directly into the tmux; the marker flips back to `[EXECUTING]` on submit, then `[DONE]` when Claude finishes |
 
 Each spawned session has **two windows**: window `claude` (driven by the
